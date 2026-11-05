@@ -192,7 +192,7 @@ Vault Proxy runs as a native sidecar in every app pod, authenticates with the po
 
 Steps 1–6 happen once per Proxy login (every 30 minutes at most). Steps 7–12 happen once per lease, and steps 13–15 on every KV poll. Step 21 is what any cross-app or cross-environment read returns. Steps 22–25 show the outage behaviour from section 6a.
 
-**Placement.** The Proxy is an init container with `restartPolicy: Always` (a Kubernetes native sidecar), so it starts before the app, stays up, and stops after it. A `startupProbe` runs `vault status` with `VAULT_ADDR=unix:///run/vault/proxy.sock`, so the app container does not start until the Proxy answers. One Proxy per pod: the docs advise one Proxy per application when `use_auto_auth_token` is on, because Vault cannot tell apart callers sharing a Proxy.
+**Placement.** The Proxy is an init container with `restartPolicy: Always` (a Kubernetes native sidecar), so it starts before the app, stays up, and stops after it. A `startupProbe` runs `vault status -address=unix:///run/vault/proxy.sock`, so the app container does not start until the Proxy answers. `VAULT_ADDR` must not be set in the Proxy container: it overrides `vault.address` in `proxy.hcl` and points Proxy at itself. One Proxy per pod: the docs advise one Proxy per application when `use_auto_auth_token` is on, because Vault cannot tell apart callers sharing a Proxy.
 
 **Configuration choices.**
 
@@ -451,10 +451,11 @@ spec:
     - name: vault-proxy
       image: hashicorp/vault:2.2.1
       restartPolicy: Always          # native sidecar
+      command: ["vault"]             # the image entrypoint does not know the proxy subcommand
       args: ["proxy", "-config=/etc/vault-proxy/proxy.hcl"]
-      env: [{ name: VAULT_ADDR, value: "unix:///run/vault/proxy.sock" }]
+      # no VAULT_ADDR env: it would override vault.address in proxy.hcl
       startupProbe:
-        exec: { command: ["vault", "status"] }
+        exec: { command: ["vault", "status", "-address=unix:///run/vault/proxy.sock"] }
         periodSeconds: 2
         failureThreshold: 30
       securityContext: { readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
@@ -573,3 +574,4 @@ Implementation review on 2026-11-05 made these changes; the plan is in `.plans/i
 | 12 | App client | Python stdlib HTTP over the UNIX socket; no `hvac` | No Vault client library or login code in the app |
 | 13 | Database admin logins | One admin login per connection (`vault_admin_preview`, `vault_admin_production`) instead of a shared `vault_admin`; random bootstrap passwords in the `postgres-credentials` Secret | Seen live: `rotate-root` on `pg-preview` changed the shared password and `pg-production` failed with `28P01`. Per-database logins also stop a preview admin from granting production roles |
 | 14 | Revocation | Explicit `revocation_statements`: `pg_terminate_backend` for the user's sessions, then `DROP ROLE IF EXISTS` | Makes session termination on revoke deterministic (the admin logins hold `pg_signal_backend`) |
+| 15 | Proxy container | `command: ["vault"]` and the probe uses `-address=unix://…`, with no `VAULT_ADDR` env | Seen live: the image entrypoint rejects `proxy` (`exec: proxy: not found`), and `VAULT_ADDR` overrode `vault.address`, so Proxy forwarded to its own socket and hung |

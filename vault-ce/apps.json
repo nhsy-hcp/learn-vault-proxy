@@ -1,0 +1,20 @@
+[
+  {
+    "name": "db-app-payments-preview",
+    "application_name": "payments",
+    "environment": "preview",
+    "team": "platform"
+  },
+  {
+    "name": "db-app-checkout-preview",
+    "application_name": "checkout",
+    "environment": "preview",
+    "team": "e-commerce"
+  },
+  {
+    "name": "db-app-payments-production",
+    "application_name": "payments",
+    "environment": "production",
+    "team": "platform"
+  }
+]

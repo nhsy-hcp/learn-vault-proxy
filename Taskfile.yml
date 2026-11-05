@@ -10,7 +10,9 @@ vars:
   vault_image: hashicorp/vault
   vault_version_tag: "2.2.1"
   postgres_image: postgres:16-alpine
-  app_image: db-app:local
+  app_image: localhost/db-app:local
+  container_cli:
+    sh: command -v podman >/dev/null 2>&1 && echo podman || echo docker
   # ce | ent (ent = later optional phase: Proxy static-secret caching)
   vault_edition: ce
   # TTLs: db max_ttl must never exceed token_max_ttl (leases are children of the Proxy token)
@@ -41,6 +43,7 @@ tasks:
       - helm repo add hashicorp https://helm.releases.hashicorp.com 2>/dev/null || true
       - helm repo update hashicorp
       - test -f .env || cp .env.template .env
+      - uv sync --project app
 
   deps:
     desc: Check required CLI tools are installed
@@ -53,6 +56,20 @@ tasks:
     desc: Run all pre-commit hooks (yamllint, gitleaks, shellcheck, hadolint, ruff)
     cmds:
       - pre-commit run --all-files
+
+  test:
+    desc: Run the db-app unit tests (pytest, no cluster needed)
+    dir: app
+    cmds:
+      - uv run --frozen pytest -q
+
+  build:
+    desc: Build the db-app image and import it into the k3d cluster
+    cmds:
+      - "{{.container_cli}} build -t {{.app_image}} app"
+      - "{{.container_cli}} save -o .tmp/db-app.tar {{.app_image}}"
+      - k3d image import .tmp/db-app.tar -c {{.cluster_name}}
+      - rm -f .tmp/db-app.tar
 
   clean:
     desc: Delete the k3d cluster, Vault init data and temporary files
@@ -84,6 +101,9 @@ tasks:
       - task: install:postgres
       - task: config:k8s-auth
       - task: config:db-secret
+      - task: config:kv-secret
+      - task: deploy:db-app
+      - task: verify:db-app
 
   install:
     desc: Install, initialise, unseal and configure Vault
@@ -191,6 +211,27 @@ tasks:
     env:
       VAULT_TOKEN:
         sh: jq -r '.root_token' vault-init.json 2>/dev/null || true
+
+  config:kv-secret:
+    desc: KV v2 at kvv2/ (max_versions=5) with one random API key per app
+    preconditions:
+      - test -f vault-init.json
+    cmds:
+      - scripts/config-kv-secret.sh
+
+  # ==========================================================================
+  # Sample app
+  # ==========================================================================
+  deploy:db-app:
+    desc: Build/import the app image and deploy one namespace, annotated SA and pod per apps.json entry
+    cmds:
+      - task: build
+      - scripts/deploy-db-app.sh {{.app_image}} {{.vault_image}}:{{.vault_version_tag}} {{.kv_refresh_seconds}}
+
+  verify:db-app:
+    desc: Scenarios 1, 2, 10 - zero-secret bootstrap, own data, own API key
+    cmds:
+      - scripts/verify-db-app.sh
 
   status:
     desc: Show cluster, Vault and app status
