@@ -1,0 +1,12 @@
+# Only pyproject.toml, uv.lock, README.md and src/ are needed in the build context.
+.venv/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.ruff_cache/
+tests/
+.env
+.env.*
+*.log
+Dockerfile
+.dockerignore
