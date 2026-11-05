@@ -45,8 +45,8 @@ One k3d cluster holds Vault, PostgreSQL and three app namespaces; each app pod p
 | `db-app` pod (×3) | `db-app-<app>-<env>` | App container plus `vault-proxy` sidecar sharing a UNIX socket |
 | Taskfile | laptop | Builds, configures and demonstrates everything; reaches Vault on `localhost:8200` |
 
-Source images: `docs/images/architecture.png` and `docs/images/proxy-sequence.png`. The README overview,
-`docs/images/overview.png`, is generated from `docs/images/overview.dot` with `task docs:diagram`.
+Source images: `docs/images/architecture.png` and `docs/images/proxy-sequence.png`. The README uses a simpler,
+version-free overview, `docs/images/overview.png`.
 
 ## 4. Workload identity and authentication
 
@@ -572,7 +572,7 @@ Implementation review on 2026-11-05 made these changes; the plan is in `.plans/i
 | 7 | Taskfile | Standard tasks `init`, `deps`, `up`, `down`, `clean`, `lint`, `test`, `test:all`, `test:ci`, `build` wrap the design's tasks | Consistent task interface |
 | 8 | Env file | `.env.template` instead of `.env.example` | House convention |
 | 9 | Enterprise toggle | Deferred to a final optional phase; licence at `vault-ent/vault-license.lic` in this repo, git-ignored | CE is built and verified first |
-| 10 | Diagrams | PNGs in `docs/images/`; no `.drawio` sources, except the README overview, generated from `overview.dot` with Graphviz and free of version numbers | Exported from the original design doc; the overview stays low-maintenance |
+| 10 | Diagrams | PNGs in `docs/images/`; no `.drawio` sources. The README overview is a separate, version-free PNG | Exported from the original design doc; the overview stays low-maintenance |
 | 11 | Tests | pytest unit tests for lease refresh, pool swap, `403`, `28P01` and KV staleness against a fake UNIX-socket server | The design had acceptance scenarios only |
 | 12 | App client | Python stdlib HTTP over the UNIX socket; no `hvac` | No Vault client library or login code in the app |
 | 13 | Database admin logins | One admin login per connection (`vault_admin_preview`, `vault_admin_production`) instead of a shared `vault_admin`; random bootstrap passwords in the `postgres-credentials` Secret | Seen live: `rotate-root` on `pg-preview` changed the shared password and `pg-production` failed with `28P01`. Per-database logins also stop a preview admin from granting production roles |
