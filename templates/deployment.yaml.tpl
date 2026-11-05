@@ -33,9 +33,11 @@ spec:
           command: ["vault"]
           args: ["proxy", "-config=/etc/vault-proxy/proxy.hcl"]
           # No VAULT_ADDR env here: it would override vault.address in proxy.hcl and loop Proxy onto itself
+          # Passes only once Proxy holds a valid auto-auth token (force mode answers lookup-self with it),
+          # so the app never starts before Proxy has logged in. `vault status` alone is not enough.
           startupProbe:
             exec:
-              command: ["vault", "status", "-address=unix:///run/vault/proxy.sock"]
+              command: ["vault", "token", "lookup", "-address=unix:///run/vault/proxy.sock", "-format=json"]
             timeoutSeconds: 3
             periodSeconds: 2
             failureThreshold: 30

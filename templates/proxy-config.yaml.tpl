@@ -12,6 +12,9 @@ data:
     auto_auth {
       method "kubernetes" {
         mount_path = "auth/kubernetes-auth-mount"
+        # Retry login quickly after a Vault outage (default backoff grows to 5m)
+        min_backoff = "1s"
+        max_backoff = "15s"
         config = {
           role       = "db-app"
           token_path = "/var/run/secrets/vault/token"

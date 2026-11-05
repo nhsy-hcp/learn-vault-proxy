@@ -22,6 +22,8 @@ vars:
   token_max_ttl: 30m
   kv_refresh_seconds: 30
   outage_minutes: 12
+  # Set (e.g. demo_ttl=2m) to shorten lease and token TTLs for demo:rotation
+  demo_ttl: ""
 
 dotenv:
   - .env
@@ -53,9 +55,12 @@ tasks:
       - scripts/check-deps.sh
 
   lint:
-    desc: Run all pre-commit hooks (yamllint, gitleaks, shellcheck, hadolint, ruff)
+    desc: Run all pre-commit hooks (yamllint, shellcheck, hadolint, ruff) and a full gitleaks scan
     cmds:
       - pre-commit run --all-files
+      # The pre-commit gitleaks hook only sees staged changes; also scan the full git history.
+      # (Not `gitleaks dir .`: it would flag git-ignored local secrets such as vault-init.json.)
+      - gitleaks git --redact --no-banner
 
   test:
     desc: Run the db-app unit tests (pytest, no cluster needed)
@@ -66,10 +71,30 @@ tasks:
   build:
     desc: Build the db-app image and import it into the k3d cluster
     cmds:
+      - mkdir -p .tmp
       - "{{.container_cli}} build -t {{.app_image}} app"
       - "{{.container_cli}} save -o .tmp/db-app.tar {{.app_image}}"
       - k3d image import .tmp/db-app.tar -c {{.cluster_name}}
       - rm -f .tmp/db-app.tar
+
+  test:all:
+    desc: Unit tests plus live acceptance checks on the running lab (verify + isolation)
+    cmds:
+      - task: test
+      - task: verify:db-app
+      - task: demo:isolation
+
+  test:ci:
+    desc: CI pipeline - lint and unit tests; with E2E=true also builds the lab and runs test:all
+    cmds:
+      - task: lint
+      - task: test
+      - |
+        if [ "${E2E:-false}" = "true" ]; then
+          task all && task test:all
+        else
+          echo "E2E not requested (set E2E=true to build the lab and run test:all)"
+        fi
 
   clean:
     desc: Delete the k3d cluster, Vault init data and temporary files
@@ -77,7 +102,7 @@ tasks:
     cmds:
       - k3d cluster delete {{.cluster_name}} || true
       - rm -f vault-init.json .env.bak
-      - rm -rf .tmp/* .pytest_cache .ruff_cache
+      - rm -rf .tmp/* app/.pytest_cache app/.ruff_cache
 
   up:
     desc: Build the whole lab from scratch (alias of all)
@@ -173,12 +198,7 @@ tasks:
     preconditions:
       - test -f vault-init.json
     cmds:
-      - kubectl exec vault-0 -n vault -- env VAULT_TOKEN="$VAULT_TOKEN" vault audit enable -path=audit_stdout file file_path=stdout || true
-      - kubectl apply -f vault-ce/vault-token-reviewer.yaml
-      - kubectl apply -f vault-ce/vault-sa-reader-rbac.yaml
-    env:
-      VAULT_TOKEN:
-        sh: jq -r '.root_token' vault-init.json 2>/dev/null || true
+      - scripts/config-vault.sh
 
   config:k8s-auth:
     desc: Kubernetes auth mount (annotations as alias metadata), templated db-app policy and role
@@ -207,10 +227,7 @@ tasks:
     preconditions:
       - test -f vault-init.json
     cmds:
-      - kubectl exec vault-0 -n vault -- env VAULT_TOKEN="$VAULT_TOKEN" vault lease revoke -prefix db/creds/
-    env:
-      VAULT_TOKEN:
-        sh: jq -r '.root_token' vault-init.json 2>/dev/null || true
+      - scripts/vault.sh lease revoke -prefix db/creds/
 
   config:kv-secret:
     desc: KV v2 at kvv2/ (max_versions=5) with one random API key per app
@@ -232,6 +249,53 @@ tasks:
     desc: Scenarios 1, 2, 10 - zero-secret bootstrap, own data, own API key
     cmds:
       - scripts/verify-db-app.sh
+
+  # ==========================================================================
+  # Demo scenarios (docs/solution-design.md section 11)
+  # ==========================================================================
+  demo:isolation:
+    desc: Scenarios 3, 4, 5, 8, 11 - cross-app, cross-env, DB-level and RBAC isolation
+    cmds:
+      - scripts/demo-isolation.sh
+
+  demo:rotation:
+    desc: "Scenario 6 - username rotates by max_ttl (demo_ttl=2m for a short run)"
+    cmds:
+      - >-
+        scripts/demo-rotation.sh "{{.demo_ttl}}" {{.db_default_ttl}} {{.db_max_ttl}}
+        {{.token_ttl}} {{.token_max_ttl}}
+
+  demo:revoke:
+    desc: Scenario 7 - break-glass revoke of payments-preview database users
+    cmds:
+      - scripts/demo-revoke.sh
+
+  demo:kv-rotate:
+    desc: "Scenario 12 - new API key version for one app (APP=db-app-payments-preview)"
+    requires:
+      vars: [APP]
+    cmds:
+      - scripts/demo-kv-rotate.sh {{.APP}} {{.kv_refresh_seconds}}
+
+  demo:outage:
+    desc: Scenarios 13, 15 - seal Vault for outage_minutes, watch KV and DB, unseal, recover
+    cmds:
+      - scripts/demo-outage.sh {{.outage_minutes}} {{.kv_refresh_seconds}}
+
+  demo:outage:new-pod:
+    desc: Scenario 14 - a pod restarted while Vault is sealed cannot start
+    cmds:
+      - scripts/demo-outage-new-pod.sh
+
+  logs:
+    desc: "Follow one app's logs (APP=db-app-payments-preview, C=app|vault-proxy)"
+    cmds:
+      - kubectl logs -f -n {{.APP | default "db-app-payments-preview"}} deploy/db-app -c {{.C | default "app"}}
+
+  logs:vault:
+    desc: Follow Vault's audit and server log
+    cmds:
+      - kubectl logs -f vault-0 -n vault
 
   status:
     desc: Show cluster, Vault and app status

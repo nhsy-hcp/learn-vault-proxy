@@ -192,7 +192,7 @@ Vault Proxy runs as a native sidecar in every app pod, authenticates with the po
 
 Steps 1–6 happen once per Proxy login (every 30 minutes at most). Steps 7–12 happen once per lease, and steps 13–15 on every KV poll. Step 21 is what any cross-app or cross-environment read returns. Steps 22–25 show the outage behaviour from section 6a.
 
-**Placement.** The Proxy is an init container with `restartPolicy: Always` (a Kubernetes native sidecar), so it starts before the app, stays up, and stops after it. A `startupProbe` runs `vault status -address=unix:///run/vault/proxy.sock`, so the app container does not start until the Proxy answers. `VAULT_ADDR` must not be set in the Proxy container: it overrides `vault.address` in `proxy.hcl` and points Proxy at itself. One Proxy per pod: the docs advise one Proxy per application when `use_auto_auth_token` is on, because Vault cannot tell apart callers sharing a Proxy.
+**Placement.** The Proxy is an init container with `restartPolicy: Always` (a Kubernetes native sidecar), so it starts before the app, stays up, and stops after it. A `startupProbe` runs `vault token lookup -address=unix:///run/vault/proxy.sock`, so the app container does not start until Proxy holds a valid auto-auth token. `vault status` alone passes as soon as Vault is unsealed, before Proxy has logged in. `VAULT_ADDR` must not be set in the Proxy container: it overrides `vault.address` in `proxy.hcl` and points Proxy at itself. One Proxy per pod: the docs advise one Proxy per application when `use_auto_auth_token` is on, because Vault cannot tell apart callers sharing a Proxy.
 
 **Configuration choices.**
 
@@ -226,9 +226,9 @@ The app is one small Python service (`db-app`, Python 3.12, `psycopg` 3, standar
 
 1. On start, `GET /v1/<DB_CREDS_PATH>` over the socket with `X-Vault-Request: true`. Keep `username`, `password` and `lease_duration`.
 2. Open a small connection pool with those credentials.
-3. Refresh at two thirds of `lease_duration`: read again (Proxy returns the same cached lease while it is renewable). If the username changed, build a new pool, switch traffic to it and close the old one.
+3. Re-read at two thirds of `lease_duration`, capped at 60 s (`CREDS_REFRESH_MAX_SECONDS`). Proxy returns the same cached lease while it is renewable. If the username changed, build a new pool, switch traffic to it and close the old one. The cap means a user dropped at `max_ttl` is replaced within about a minute.
 4. On PostgreSQL error `28P01` (invalid password) or `28000`: call `POST /proxy/v1/cache-clear` for that path, read again, rebuild the pool. Retry with jittered backoff, at most 5 attempts.
-5. On `403` from Vault: log `vault_denied` with the path and do not retry. That outcome is the expected result of the isolation tests.
+5. On `403` from Vault for its own path: log `vault_denied` and retry with jittered backoff (capped at 30 s), keeping any open pool. A 403 is transient while Proxy has no token (just started, or re-authenticating after an outage). `/try` never retries: its 403 is the expected result of the isolation tests.
 
 **Endpoints.**
 
@@ -321,7 +321,7 @@ The trust boundary is Kubernetes RBAC on ServiceAccounts: Vault checks the token
 
 **Demo-only shortcuts that must not carry into production:** plain HTTP on the Vault listener (`tlsDisable: true`), unseal keys and root token in a local file, root token used for configuration, `sslmode=disable` to PostgreSQL, a single Vault node and the `postgres` superuser password in a manifest. Production equivalents: TLS everywhere, auto-unseal, root token revoked after a Terraform-driven bootstrap, `sslmode=verify-full`, and a 3- or 5-node Raft cluster.
 
-**Audit.** A file audit device writes to stdout, so `kubectl logs vault-0 -n vault` shows every login with its alias metadata and every `db/creds` read, including denials. Each denial in section 11 can be pointed out in the log during the demo.
+**Audit.** A file audit device writes to stdout, so `kubectl logs vault-0 -n vault` shows every login (with its role and ServiceAccount name, namespace and UID) and every `db/creds` and `kvv2` read, including denials. The `alias-metadata-*` values are stored on the entity alias, not in the audit entry; `vault read identity/entity-alias/id/<id>` shows them. Each denial in section 11 can be pointed out in the log during the demo.
 
 ## 11. Demo scenarios and acceptance criteria
 
@@ -387,6 +387,8 @@ vault {
 auto_auth {
   method "kubernetes" {
     mount_path = "auth/kubernetes-auth-mount"
+    min_backoff = "1s"
+    max_backoff = "15s"   # default grows to 5m, which delays recovery after an outage
     config = {
       role       = "db-app"
       token_path = "/var/run/secrets/vault/token"
@@ -455,7 +457,7 @@ spec:
       args: ["proxy", "-config=/etc/vault-proxy/proxy.hcl"]
       # no VAULT_ADDR env: it would override vault.address in proxy.hcl
       startupProbe:
-        exec: { command: ["vault", "status", "-address=unix:///run/vault/proxy.sock"] }
+        exec: { command: ["vault", "token", "lookup", "-address=unix:///run/vault/proxy.sock", "-format=json"] }
         periodSeconds: 2
         failureThreshold: 30
       securityContext: { readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
@@ -563,7 +565,7 @@ Implementation review on 2026-11-05 made these changes; the plan is in `.plans/i
 | 1 | Repository | Standalone repo `learn-vault-proxy`; `cluster-up.sh`, `cluster-ready.sh` and the `vault_cmd()` helper are copied and adapted, without `VAULT_NAMESPACE` | The reference repo is not modified |
 | 2 | Versions | k3s pinned to `rancher/k3s:v1.36.6-k3s1`; Vault CE pinned to `hashicorp/vault:2.2.1` | Native sidecars need ≥ 1.29; `2.1` was a floating tag |
 | 3 | Scenario 5 | The task reads a payments-preview credential with the root token, runs `psql` to `production` inside the postgres pod, expects `permission denied for database`, then revokes the lease | The app never exposes its password |
-| 4 | Scenario 8 | An `app-team` Role and RoleBinding in each `db-app-*` namespace (read pods and logs, no ServiceAccount writes), exercised with `kubectl --as=app-team` | The scenario needs a concrete identity; annotations stay RBAC-only (no admission policy) |
+| 4 | Scenario 8 | An `app-team` Role and RoleBinding in each `db-app-*` namespace (read-only `get`/`list`/`watch` on pods, pod logs, services, configmaps, events, ServiceAccounts, deployments and replicasets; no writes of any kind), exercised with `kubectl --as=app-team` | The scenario needs a concrete identity; annotations stay RBAC-only (no admission policy) |
 | 5 | App: revoke | On connection loss (`57P01` when Vault terminates sessions) the app reconnects; if login then fails with `28P01`/`28000` it calls `cache-clear` and re-reads | Revocation kills sessions before any password error |
 | 6 | Proxy container | Memory `emptyDir` mounted at `/tmp` | Keeps `readOnlyRootFilesystem` safe if Proxy writes temp files |
 | 7 | Taskfile | Standard tasks `init`, `deps`, `up`, `down`, `clean`, `lint`, `test`, `test:all`, `test:ci`, `build` wrap the design's tasks | Consistent task interface |
@@ -575,3 +577,8 @@ Implementation review on 2026-11-05 made these changes; the plan is in `.plans/i
 | 13 | Database admin logins | One admin login per connection (`vault_admin_preview`, `vault_admin_production`) instead of a shared `vault_admin`; random bootstrap passwords in the `postgres-credentials` Secret | Seen live: `rotate-root` on `pg-preview` changed the shared password and `pg-production` failed with `28P01`. Per-database logins also stop a preview admin from granting production roles |
 | 14 | Revocation | Explicit `revocation_statements`: `pg_terminate_backend` for the user's sessions, then `DROP ROLE IF EXISTS` | Makes session termination on revoke deterministic (the admin logins hold `pg_signal_backend`) |
 | 15 | Proxy container | `command: ["vault"]` and the probe uses `-address=unix://…`, with no `VAULT_ADDR` env | Seen live: the image entrypoint rejects `proxy` (`exec: proxy: not found`), and `VAULT_ADDR` overrode `vault.address`, so Proxy forwarded to its own socket and hung |
+| 16 | Proxy startup probe | `vault token lookup` through the socket instead of `vault status` | Seen live: after an unseal, `vault status` passed before Proxy had logged in, so the app's first read was forwarded without a token, got `403` and treated it as permanent |
+| 17 | Proxy auto-auth backoff | `min_backoff = "1s"`, `max_backoff = "15s"` | Seen live: after a 2-minute seal the default backoff kept a new pod from logging in for over 3 minutes |
+| 18 | Secret handling in scripts | The root token, unseal keys, reviewer JWT, admin bootstrap passwords and demo DB passwords go to `kubectl exec` on stdin (`IFS= read -r`, `key=-`, `password=-`, `token_reviewer_jwt=-`), never as arguments | Arguments show up in `ps` on the laptop and inside the pod, and in the API-server exec URL |
+| 19 | Lint | `task lint` adds `gitleaks git` over the full history | The pre-commit gitleaks hook scans only staged changes, so `pre-commit run --all-files` checked nothing |
+| 20 | App resilience | A 403 on the app's own path retries with backoff instead of stopping; truncated Proxy responses become transport errors; background loops never exit; refresh capped at 60 s and `fetched_at` kept for an unchanged lease | Review findings: Proxy in `force` mode forwards token-less requests while it re-authenticates, and a cached body always reports the full `lease_duration` |
