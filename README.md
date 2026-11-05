@@ -4,7 +4,9 @@ A sample app on k3d gets short-lived PostgreSQL credentials from Vault Community
 secret. It authenticates with its Kubernetes ServiceAccount through a Vault Proxy sidecar listening on a UNIX socket.
 One templated policy, driven by ServiceAccount annotations, isolates each app and environment.
 
-![Architecture](docs/images/architecture.png)
+![Overview](docs/images/overview.png)
+
+For the detailed architecture, see the [solution design](docs/solution-design.md).
 
 ## Prerequisites
 

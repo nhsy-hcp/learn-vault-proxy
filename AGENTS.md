@@ -45,6 +45,7 @@ implementation plan is `.plans/implementation-plan.md`.
 | `task down` | Stops the cluster, keeping its data; afterwards run `task cluster:up` and `task unseal:vault` |
 | `task build` | Builds the app image and imports it into k3d |
 | `task lint` | Runs every pre-commit hook |
+| `task docs:diagram` | Renders `docs/images/overview.dot` to the README overview PNG (needs Graphviz) |
 | `task test` | Runs the app unit tests (no cluster) |
 | `task test:all` | Runs the unit tests, `verify:db-app` and `demo:isolation` on the running lab |
 | `task test:ci` | Runs lint and the unit tests; with `E2E=true`, also builds the lab and runs `test:all` |

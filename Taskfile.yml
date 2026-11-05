@@ -62,6 +62,14 @@ tasks:
       # (Not `gitleaks dir .`: it would flag git-ignored local secrets such as vault-init.json.)
       - gitleaks git --redact --no-banner
 
+  docs:diagram:
+    desc: Render the README overview diagram (docs/images/overview.dot -> overview.png) with Graphviz
+    preconditions:
+      - sh: command -v dot
+        msg: Graphviz is not installed - run brew install graphviz
+    cmds:
+      - dot -Tpng -Gdpi=150 docs/images/overview.dot -o docs/images/overview.png
+
   test:
     desc: Run the db-app unit tests (pytest, no cluster needed)
     dir: app
