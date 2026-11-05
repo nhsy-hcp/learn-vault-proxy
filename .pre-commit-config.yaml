@@ -1,0 +1,58 @@
+# Pre-commit hooks. Linters run as locally installed binaries (language: system).
+# Install: task init (runs `pre-commit install`). Run all: task lint
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--unsafe, --allow-multiple-documents]
+        exclude: \.tpl$
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=1000]
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: mixed-line-ending
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+
+  - repo: local
+    hooks:
+      - id: yamllint
+        name: yamllint
+        language: system
+        entry: yamllint --strict -c .yamllint.yaml
+        types: [yaml]
+
+      - id: gitleaks
+        name: gitleaks
+        language: system
+        entry: gitleaks git --pre-commit --staged --redact --no-banner
+        pass_filenames: false
+
+      - id: shellcheck
+        name: shellcheck
+        language: system
+        entry: shellcheck --severity=warning
+        types: [shell]
+
+      - id: hadolint
+        name: hadolint
+        language: system
+        entry: hadolint
+        types: [dockerfile]
+
+      - id: ruff-check
+        name: ruff check
+        language: system
+        entry: ruff check --fix
+        types_or: [python, pyi]
+
+      - id: ruff-format
+        name: ruff format
+        language: system
+        entry: ruff format
+        types_or: [python, pyi]

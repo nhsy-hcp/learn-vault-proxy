@@ -1,0 +1,33 @@
+# Vault secrets and local state (never commit)
+vault-init.json
+.env
+.env.bak
+*.bak
+*.lic
+
+# Local working folders
+/.tmp/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Agent tooling
+.claude/

@@ -1,0 +1,63 @@
+version: '3'
+
+# Vault workload identity + Vault Proxy + dynamic PostgreSQL credentials on k3d.
+# Design: docs/solution-design.md
+
+vars:
+  cluster_name: vault-db-lab
+  k3s_image: rancher/k3s:v1.36.6-k3s1
+  vault_chart_version: "0.34.1"
+  vault_image: hashicorp/vault
+  vault_version_tag: "2.2.1"
+  postgres_image: postgres:16-alpine
+  app_image: db-app:local
+  # ce | ent (ent = later optional phase: Proxy static-secret caching)
+  vault_edition: ce
+  # TTLs: db max_ttl must never exceed token_max_ttl (leases are children of the Proxy token)
+  db_default_ttl: 10m
+  db_max_ttl: 30m
+  token_ttl: 15m
+  token_max_ttl: 30m
+  kv_refresh_seconds: 30
+  outage_minutes: 12
+
+dotenv:
+  - .env
+
+tasks:
+  # ==========================================================================
+  # Standard interface
+  # ==========================================================================
+  default:
+    silent: true
+    cmds:
+      - task --list
+
+  init:
+    desc: One-time setup - install pre-commit hooks, add Helm repo, sync app deps
+    cmds:
+      - task: deps
+      - pre-commit install
+      - helm repo add hashicorp https://helm.releases.hashicorp.com 2>/dev/null || true
+      - helm repo update hashicorp
+      - test -f .env || cp .env.template .env
+
+  deps:
+    desc: Check required CLI tools are installed
+    aliases: [prerequisites]
+    silent: true
+    cmds:
+      - scripts/check-deps.sh
+
+  lint:
+    desc: Run all pre-commit hooks (yamllint, gitleaks, shellcheck, hadolint, ruff)
+    cmds:
+      - pre-commit run --all-files
+
+  clean:
+    desc: Delete the k3d cluster, Vault init data and temporary files
+    prompt: This deletes the cluster and vault-init.json. Continue?
+    cmds:
+      - k3d cluster delete {{.cluster_name}} || true
+      - rm -f vault-init.json .env.bak
+      - rm -rf .tmp/* .pytest_cache .ruff_cache
