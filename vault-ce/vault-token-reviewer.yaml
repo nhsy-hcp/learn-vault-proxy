@@ -1,0 +1,28 @@
+# ServiceAccount whose long-lived token Vault uses to call the TokenReview API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-token-reviewer
+  namespace: vault
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vault-token-reviewer-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: vault-token-reviewer
+    namespace: vault
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-token-secret
+  namespace: vault
+  annotations:
+    kubernetes.io/service-account.name: vault-token-reviewer
+type: kubernetes.io/service-account-token

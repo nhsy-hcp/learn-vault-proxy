@@ -1,0 +1,46 @@
+# Vault Community Edition: single-node integrated storage (Raft) on k3d.
+# Image tag is set from the Taskfile (vault_version_tag). Demo only: no TLS.
+global:
+  tlsDisable: true
+
+injector:
+  enabled: false
+
+csi:
+  enabled: false
+
+server:
+  image:
+    repository: hashicorp/vault
+  affinity: ""
+  dataStorage:
+    enabled: true
+    size: 2Gi
+    storageClass: local-path
+  service:
+    type: NodePort
+    nodePort: 30820
+  standalone:
+    enabled: false
+  ha:
+    enabled: true
+    replicas: 1
+    raft:
+      enabled: true
+      setNodeId: true
+      config: |
+        ui = true
+
+        listener "tcp" {
+          tls_disable     = 1
+          address         = "[::]:8200"
+          cluster_address = "[::]:8201"
+        }
+
+        storage "raft" {
+          path = "/vault/data"
+        }
+
+        service_registration "kubernetes" {}
+  ui:
+    enabled: true

@@ -61,3 +61,106 @@ tasks:
       - k3d cluster delete {{.cluster_name}} || true
       - rm -f vault-init.json .env.bak
       - rm -rf .tmp/* .pytest_cache .ruff_cache
+
+  up:
+    desc: Build the whole lab from scratch (alias of all)
+    cmds:
+      - task: all
+
+  down:
+    desc: Stop the k3d cluster, keeping its data (alias of cluster:stop)
+    cmds:
+      - task: cluster:stop
+
+  # ==========================================================================
+  # Workflow
+  # ==========================================================================
+  all:
+    desc: prerequisites -> cluster -> Vault -> config -> deploy -> verify
+    cmds:
+      - task: deps
+      - task: cluster:up
+      - task: install
+
+  install:
+    desc: Install, initialise, unseal and configure Vault
+    cmds:
+      - task: install:vault
+      - task: init:vault
+      - task: unseal:vault
+      - task: config:vault
+
+  # ==========================================================================
+  # Cluster
+  # ==========================================================================
+  cluster:up:
+    desc: Create or start the k3d cluster
+    aliases: [start, k3d]
+    cmds:
+      - scripts/cluster-up.sh {{.cluster_name}} {{.k3s_image}}
+      - scripts/cluster-ready.sh {{.cluster_name}}
+
+  cluster:stop:
+    desc: Stop the k3d cluster (data kept; run unseal:vault after cluster:up)
+    cmds:
+      - k3d cluster stop {{.cluster_name}}
+
+  cluster:down:
+    desc: Delete the k3d cluster
+    cmds:
+      - k3d cluster delete {{.cluster_name}} || true
+
+  # ==========================================================================
+  # Vault
+  # ==========================================================================
+  install:vault:
+    desc: Helm install Vault CE (single-node Raft, NodePort 30820)
+    preconditions:
+      - sh: kubectl config current-context | grep -q '^k3d-{{.cluster_name}}$'
+        msg: kubectl context is not k3d-{{.cluster_name}} - run task cluster:up
+    cmds:
+      - kubectl create namespace vault --dry-run=client -o yaml | kubectl apply -f -
+      - >-
+        helm upgrade --install vault hashicorp/vault
+        --version {{.vault_chart_version}} -n vault
+        --values vault-ce/vault-values.yaml
+        --set server.image.repository={{.vault_image}}
+        --set server.image.tag={{.vault_version_tag}}
+      - |
+        for i in $(seq 1 30); do
+          kubectl get pod vault-0 -n vault >/dev/null 2>&1 && break
+          sleep 2
+        done
+      - kubectl wait --for=jsonpath='{.status.phase}'=Running pod/vault-0 -n vault --timeout=5m
+
+  init:vault:
+    desc: Initialise Vault once; writes vault-init.json and .env
+    cmds:
+      - scripts/init-vault.sh
+
+  unseal:vault:
+    desc: Unseal Vault with 3 keys from vault-init.json
+    preconditions:
+      - test -f vault-init.json
+    cmds:
+      - scripts/unseal-vault.sh
+
+  config:vault:
+    desc: Audit device to stdout, token reviewer SA and SA-reader RBAC
+    preconditions:
+      - test -f vault-init.json
+    cmds:
+      - kubectl exec vault-0 -n vault -- env VAULT_TOKEN="$VAULT_TOKEN" vault audit enable -path=audit_stdout file file_path=stdout || true
+      - kubectl apply -f vault-ce/vault-token-reviewer.yaml
+      - kubectl apply -f vault-ce/vault-sa-reader-rbac.yaml
+    env:
+      VAULT_TOKEN:
+        sh: jq -r '.root_token' vault-init.json 2>/dev/null || true
+
+  status:
+    desc: Show cluster, Vault and app status
+    silent: true
+    cmds:
+      - kubectl get nodes
+      - kubectl get pods -A -l 'app.kubernetes.io/name in (vault,postgres,db-app)' 2>/dev/null || true
+      - vault status -address=http://127.0.0.1:8200 || true
