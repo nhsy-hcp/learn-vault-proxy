@@ -29,3 +29,7 @@ After a laptop restart, run `task cluster:up && task unseal:vault`. To delete ev
 - [Walkthrough and demo scenarios](docs/db-proxy-secrets.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Implementation plan](.plans/implementation-plan.md)
+
+## License
+
+[Mozilla Public License 2.0](LICENSE)
