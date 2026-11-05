@@ -14,12 +14,18 @@ envsubst and openssl. Check them with `task deps`.
 ## Quick start
 
 ```bash
-task init     # pre-commit hooks, Helm repo, .env
-task deps     # verify tools
-task --list   # available tasks
+task init             # pre-commit hooks, Helm repo, .env, app venv
+task all              # cluster, Vault CE, PostgreSQL, 3 apps, verify (about 5 min)
+task demo:isolation   # cross-app and cross-environment reads are denied
+task demo:revoke      # break-glass revoke; the app recovers with a new user
+task logs             # follow the app's JSON logs (or use k9s)
 ```
+
+After a laptop restart, run `task cluster:up && task unseal:vault`. To delete everything, run `task clean`.
 
 ## Documentation
 
 - [Solution design](docs/solution-design.md)
+- [Walkthrough and demo scenarios](docs/db-proxy-secrets.md)
+- [Troubleshooting](docs/troubleshooting.md)
 - [Implementation plan](.plans/implementation-plan.md)

@@ -1,0 +1,85 @@
+name: ci
+
+"on":
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
+      - ".plans/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      act: ${{ steps.runner.outputs.act }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect act
+        id: runner
+        shell: bash
+        run: echo "act=${ACT:-false}" >>"$GITHUB_OUTPUT"
+
+      - uses: arduino/setup-task@v2
+
+      - name: Install tools
+        run: scripts/ci-install-tools.sh
+
+      - name: Lint
+        run: task lint
+
+      - name: Unit tests
+        run: task test
+
+  e2e:
+    name: e2e on k3d
+    needs: lint
+    if: ${{ needs.lint.outputs.act != 'true' && github.ref != 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: arduino/setup-task@v2
+
+      - name: Install tools
+        run: scripts/ci-install-tools.sh --e2e
+
+      - name: Build the lab
+        run: task all
+
+      - name: Acceptance tests
+        run: task test:all
+
+      - name: Debug on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          {
+            echo "## Debug: CI failure"
+            echo '### Pods'; echo '```'; kubectl get pods -A || true; echo '```'
+            echo '### Vault'; echo '```'; kubectl logs vault-0 -n vault --tail=200 || true; echo '```'
+            for ns in db-app-payments-preview db-app-checkout-preview db-app-payments-production; do
+              echo "### ${ns}"; echo '```'
+              kubectl logs -n "${ns}" deploy/db-app -c vault-proxy --tail=50 || true
+              kubectl logs -n "${ns}" deploy/db-app -c app --tail=50 || true
+              echo '```'
+            done
+            echo '### Events'; echo '```'
+            kubectl get events -A --sort-by='.lastTimestamp' | tail -50 || true
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"

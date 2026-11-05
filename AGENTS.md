@@ -33,20 +33,30 @@ implementation plan is `.plans/implementation-plan.md`.
 | `templates/` | Per-app manifest templates rendered with `envsubst` |
 | `app/` | `db-app` Python source, tests and Dockerfile |
 | `docs/` | Design, walkthrough and troubleshooting |
+| `.github/workflows/ci.yml` | Lint and unit tests; e2e on k3d for non-main branches. Tools come from `scripts/ci-install-tools.sh` |
 
 ## Common tasks
 
 | Task | Does |
 | --- | --- |
-| `task init` | Installs pre-commit hooks, adds the Helm repo, creates `.env` |
+| `task init` | Installs pre-commit hooks, adds the Helm repo, creates `.env`, syncs the app venv |
 | `task deps` | Checks the required CLI tools |
+| `task all` (`up`) | Builds the whole lab: cluster, Vault, auth, PostgreSQL, engines, apps, verify |
+| `task down` | Stops the cluster, keeping its data; afterwards run `task cluster:up` and `task unseal:vault` |
+| `task build` | Builds the app image and imports it into k3d |
 | `task lint` | Runs every pre-commit hook |
+| `task test` | Runs the app unit tests (no cluster) |
+| `task test:all` | Runs the unit tests, `verify:db-app` and `demo:isolation` on the running lab |
+| `task test:ci` | Runs lint and the unit tests; with `E2E=true`, also builds the lab and runs `test:all` |
+| `task demo:*` | Runs the demo scenarios (see `docs/db-proxy-secrets.md`) |
+| `task logs APP=… C=app\|vault-proxy` | Follows an app's JSON logs (k9s works too) |
 | `task clean` | Deletes the cluster, `vault-init.json` and temporary files |
 
-The full task list is `task --list`. Tasks are added phase by phase; see the plan.
+For the full list, run `task --list`.
 
 ## Workflow for agents
 
-1. Run `task deps` first and stop if anything is missing.
+1. Run `task deps` first and stop if anything is missing. Scripts must run on macOS `/bin/bash` 3.2, so no
+   associative arrays and no `mapfile`.
 2. Run tasks in order. If a step fails, stop and report rather than improvising changes.
 3. Use `localhost:8200` for Vault from the laptop, and `kubectl exec vault-0` inside the cluster.
