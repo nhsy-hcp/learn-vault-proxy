@@ -559,7 +559,7 @@ cache {
 Read KV through the socket with `vault read kvv2/data/...` or plain HTTP, not `vault kv get`. `kv get` first calls `sys/internal/ui/mounts`, which fails while Vault is down even when the secret is cached.
 ## 14. Changes from v1
 
-Implementation review on 2026-11-05 made these changes; the plan is in `.plans/implementation-plan.md`.
+Implementation review on 2026-11-05 made these changes.
 
 | # | Area | Change | Why |
 | --- | --- | --- | --- |

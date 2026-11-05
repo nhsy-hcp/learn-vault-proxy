@@ -6,7 +6,7 @@ Rules and orientation for AI agents working in this repository.
 
 A local lab showing Vault Kubernetes-auth workload identity, a Vault Proxy native sidecar on a UNIX socket, and
 dynamic PostgreSQL credentials on k3d with Vault Community Edition. The design is `docs/solution-design.md`; the
-implementation plan is `.plans/implementation-plan.md`.
+implementation plan is kept locally in `.plans/implementation-plan.md` (git-ignored).
 
 ## Rules
 
