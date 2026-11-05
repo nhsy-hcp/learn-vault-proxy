@@ -81,6 +81,9 @@ tasks:
       - task: deps
       - task: cluster:up
       - task: install
+      - task: install:postgres
+      - task: config:k8s-auth
+      - task: config:db-secret
 
   install:
     desc: Install, initialise, unseal and configure Vault
@@ -153,6 +156,38 @@ tasks:
       - kubectl exec vault-0 -n vault -- env VAULT_TOKEN="$VAULT_TOKEN" vault audit enable -path=audit_stdout file file_path=stdout || true
       - kubectl apply -f vault-ce/vault-token-reviewer.yaml
       - kubectl apply -f vault-ce/vault-sa-reader-rbac.yaml
+    env:
+      VAULT_TOKEN:
+        sh: jq -r '.root_token' vault-init.json 2>/dev/null || true
+
+  config:k8s-auth:
+    desc: Kubernetes auth mount (annotations as alias metadata), templated db-app policy and role
+    preconditions:
+      - test -f vault-init.json
+    cmds:
+      - scripts/config-k8s-auth.sh {{.token_ttl}} {{.token_max_ttl}}
+
+  # ==========================================================================
+  # PostgreSQL and database secrets engine
+  # ==========================================================================
+  install:postgres:
+    desc: Deploy PostgreSQL 16 with bootstrap SQL (databases, schemas, group roles)
+    cmds:
+      - scripts/install-postgres.sh
+
+  config:db-secret:
+    desc: Database secrets engine, pg-preview/pg-production connections, roles, rotate-root
+    preconditions:
+      - test -f vault-init.json
+    cmds:
+      - scripts/config-db-secret.sh {{.db_default_ttl}} {{.db_max_ttl}}
+
+  clean:leases:
+    desc: Revoke every dynamic database lease (break-glass for all apps)
+    preconditions:
+      - test -f vault-init.json
+    cmds:
+      - kubectl exec vault-0 -n vault -- env VAULT_TOKEN="$VAULT_TOKEN" vault lease revoke -prefix db/creds/
     env:
       VAULT_TOKEN:
         sh: jq -r '.root_token' vault-init.json 2>/dev/null || true

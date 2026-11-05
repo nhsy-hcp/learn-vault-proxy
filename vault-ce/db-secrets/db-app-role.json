@@ -1,0 +1,10 @@
+{
+  "bound_service_account_names": ["db-app-*-sa"],
+  "bound_service_account_namespaces": ["db-app-*"],
+  "audience": "vault",
+  "alias_name_source": "serviceaccount_uid",
+  "token_policies": ["db-app"],
+  "token_type": "service",
+  "token_ttl": "15m",
+  "token_max_ttl": "30m"
+}

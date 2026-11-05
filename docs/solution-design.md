@@ -127,7 +127,7 @@ The database secrets engine at `db/` creates a new PostgreSQL login for every le
 
 Group roles own nothing; a bootstrap SQL ConfigMap creates the databases, schemas, tables, group roles and seed rows. `PUBLIC` loses `CONNECT` on both databases, so a dynamic user can only reach the database its group role is granted.
 
-**Vault's own database login.** Vault connects as `vault_admin`, not the `postgres` superuser. It has `CREATEROLE` and `CONNECT` on both databases, and each group role is granted to it `WITH ADMIN OPTION`, which PostgreSQL 16 requires before a `CREATEROLE` user can grant a role. Straight after configuration, `vault write -f db/rotate-root/<connection>` replaces its bootstrap password with one only Vault knows.
+**Vault's own database logins.** Vault connects as `vault_admin_preview` for `pg-preview` and `vault_admin_production` for `pg-production`, never as the `postgres` superuser. Each login has `CREATEROLE`, `CONNECT` on its own database only and `pg_signal_backend` (to end a revoked user's sessions). Only that database's group roles are granted to it `WITH ADMIN OPTION`, which PostgreSQL 16 requires before a `CREATEROLE` user can grant a role. Straight after configuration, `vault write -f db/rotate-root/<connection>` replaces each bootstrap password with one only Vault knows. One login per connection matters: with a shared login, rotating it through one connection breaks the other. The bootstrap passwords are random, generated at install time into the `postgres-credentials` Secret.
 
 **Connections and roles.**
 
@@ -142,7 +142,7 @@ Creation statement, per role (group role changes per row above):
 CREATE ROLE "{{name}}" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}' IN ROLE preview_payments_rw;
 ```
 
-The plugin's default revocation terminates the user's sessions and drops the role. `VALID UNTIL` is a second guard: PostgreSQL itself rejects the password after expiry even if a revocation is missed. Two connections keep a preview role from ever being allowed to create users in `production`, even through a mis-set `allowed_roles`.
+Each role's `revocation_statements` terminate the user's sessions (`pg_terminate_backend`) and then drop the role. `VALID UNTIL` is a second guard: PostgreSQL itself rejects the password after expiry even if a revocation is missed. Two connections keep a preview role from ever being allowed to create users in `production`, even through a mis-set `allowed_roles`.
 
 **Lease lifecycle.**
 
@@ -314,7 +314,7 @@ The trust boundary is Kubernetes RBAC on ServiceAccounts: Vault checks the token
 | Another process or container in the pod uses the Proxy | No TCP listener; socket `0660` for UID/GID 10001; volume mounted only in app and Proxy | Any code running as UID 10001 |
 | Request forgery through the app (SSRF) | `require_request_header = true` rejects requests without `X-Vault-Request` | An attacker who controls headers too |
 | Leaked database password | One user per lease, `VALID UNTIL`, 10-minute TTL, 30-minute cap, `revoke -prefix` | Valid until revocation, at most 30 minutes |
-| Vault's database admin password leaked from bootstrap | `vault_admin` is not a superuser; `rotate-root` right after configuration | The `postgres` superuser password stays in the Deployment for the demo |
+| Vault's database admin password leaked from bootstrap | `vault_admin_preview` and `vault_admin_production` are not superusers and each reaches one database; `rotate-root` right after configuration | The random `postgres` superuser password stays in a Kubernetes Secret for the demo |
 | Unseal keys or root token on the laptop | `vault-init.json` and `.env` are git-ignored, as in the repo | Demo-grade only (below) |
 
 **KV v2 API key, compared with the dynamic credentials.** A leaked API key stays valid until someone rotates it, not for 30 minutes, so it is the weaker of the two secrets and the demo says so. On Enterprise, Proxy holds the key in memory for the life of the pod, and under `optimistic` refresh a policy revoked during an outage only takes effect once Vault returns. The trade is availability against how quickly access can be revoked. `pessimistic` reverses it.
@@ -366,7 +366,7 @@ The TTL variables (`db_default_ttl`, `db_max_ttl`, `token_ttl`, `token_max_ttl`)
 | --- | --- | --- |
 | Token and lease expire together at 30 min | Every 30 min the app sees one forced credential switch | Expected and shown in scenario 6; the app's pool swap keeps requests flowing |
 | Stale Proxy cache after out-of-band revocation | App retries with dead credentials | `cache-clear` on `28P01` (section 8) |
-| PostgreSQL 16 `CREATEROLE` rules | Role creation fails without `ADMIN OPTION` | Bootstrap SQL grants each group role to `vault_admin` `WITH ADMIN OPTION` |
+| PostgreSQL 16 `CREATEROLE` rules | Role creation fails without `ADMIN OPTION` | Bootstrap SQL grants each group role to its database's admin login `WITH ADMIN OPTION` |
 | Native sidecar ordering on an older k3s image | App starts before Proxy is ready | Pin a k3s image ≥ 1.29; the app also retries the socket for 30 s |
 
 **Open decisions**
@@ -502,11 +502,14 @@ CREATE DATABASE preview;
 CREATE DATABASE production;
 REVOKE CONNECT ON DATABASE preview, production FROM PUBLIC;
 
-CREATE ROLE vault_admin WITH LOGIN CREATEROLE PASSWORD 'bootstrap-rotated-by-vault';
+-- :'..._password' variables are random, supplied by 00-bootstrap.sh from a Kubernetes Secret
+CREATE ROLE vault_admin_preview WITH LOGIN CREATEROLE PASSWORD :'vault_admin_preview_password';
+CREATE ROLE vault_admin_production WITH LOGIN CREATEROLE PASSWORD :'vault_admin_production_password';
+GRANT pg_signal_backend TO vault_admin_preview, vault_admin_production;
 CREATE ROLE preview_payments_rw NOLOGIN;
-GRANT CONNECT ON DATABASE preview TO preview_payments_rw, vault_admin;
-GRANT preview_payments_rw TO vault_admin WITH ADMIN OPTION;
--- repeat for preview_checkout_rw and production_payments_rw,
+GRANT CONNECT ON DATABASE preview TO preview_payments_rw, vault_admin_preview;
+GRANT preview_payments_rw TO vault_admin_preview WITH ADMIN OPTION;
+-- repeat for preview_checkout_rw (vault_admin_preview) and production_payments_rw (vault_admin_production),
 -- then per database: CREATE SCHEMA, tables, seed rows, GRANT USAGE and DML to the group role
 ```
 
@@ -568,3 +571,5 @@ Implementation review on 2026-11-05 made these changes; the plan is in `.plans/i
 | 10 | Diagrams | PNGs in `docs/images/`; no `.drawio` sources | Exported from the original design doc |
 | 11 | Tests | pytest unit tests for lease refresh, pool swap, `403`, `28P01` and KV staleness against a fake UNIX-socket server | The design had acceptance scenarios only |
 | 12 | App client | Python stdlib HTTP over the UNIX socket; no `hvac` | No Vault client library or login code in the app |
+| 13 | Database admin logins | One admin login per connection (`vault_admin_preview`, `vault_admin_production`) instead of a shared `vault_admin`; random bootstrap passwords in the `postgres-credentials` Secret | Seen live: `rotate-root` on `pg-preview` changed the shared password and `pg-production` failed with `28P01`. Per-database logins also stop a preview admin from granting production roles |
+| 14 | Revocation | Explicit `revocation_statements`: `pg_terminate_backend` for the user's sessions, then `DROP ROLE IF EXISTS` | Makes session termination on revoke deterministic (the admin logins hold `pg_signal_backend`) |
