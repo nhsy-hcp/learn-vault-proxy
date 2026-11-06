@@ -69,6 +69,7 @@ def serve(fake_proxy):
             conn.close()
             return resp.status, json.loads(raw), raw
 
+        get.creds = creds  # type: ignore[attr-defined]
         return state, get
 
     yield start
@@ -85,6 +86,17 @@ def test_healthz_ok_when_pool_open(serve):
 def test_healthz_503_without_pool(serve):
     _, get = serve(load=False)
     assert get("/healthz")[0] == 503
+
+
+def test_requests_during_shutdown_get_503_without_new_lease(serve):
+    state, get = serve()
+    get.creds.stop()
+    reads = len(state.calls("GET", f"/v1/{CREDS}"))
+
+    status, body, _ = get("/whoami")
+
+    assert (status, body) == (503, {"error": "shutting_down"})
+    assert len(state.calls("GET", f"/v1/{CREDS}")) == reads
 
 
 def test_whoami_and_data(serve):

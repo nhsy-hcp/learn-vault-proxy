@@ -17,6 +17,9 @@
   refresh loop does, with a bounded backoff (5 s growing to 30 s), because Proxy forwards requests
   without a token while it has none (startup, re-authentication). The loop never exits on error.
 
+* After :meth:`CredentialManager.stop` nothing reads Vault or installs a pool again (any caller
+  gets :class:`ShuttingDown`), so no lease is minted after the app revokes its token on exit.
+
 The password is held only in memory, is excluded from ``repr`` and is never logged or returned.
 """
 
@@ -47,6 +50,8 @@ SQLSTATE_LOGIN_FAILED = frozenset({"28P01", "28000"})
 DEFAULT_MAX_REFRESH_SECONDS = 60.0  # refresh cap; env CREDS_REFRESH_MAX_SECONDS
 DENIED_BACKOFF_BASE_SECONDS = 5.0
 DENIED_BACKOFF_CAP_SECONDS = 30.0
+# Covers a refresh in progress: Vault read (5 s) + login probe (5 s) + pool open (5 s).
+STOP_JOIN_SECONDS = 15.0
 
 LOGIN = "login"
 CONNECTION_LOST = "connection_lost"
@@ -74,6 +79,10 @@ class LoginFailed(Exception):
 
 class NoPool(Exception):
     """No connection pool is open yet."""
+
+
+class ShuttingDown(Exception):
+    """``stop()`` was called: no new Vault reads or pools."""
 
 
 class RetriesExhausted(Exception):
@@ -170,7 +179,12 @@ class CredentialManager:
         self.denied = False
 
     # ------------------------------------------------------------------ Vault
+    def _check_open(self) -> None:
+        if self._stop.is_set():
+            raise ShuttingDown
+
     def fetch_creds(self) -> DbCreds:
+        self._check_open()  # a read after revoke-self would make Proxy re-auth and mint a lease
         status, _, body = self.vault.read(self.creds_path)
         if status == 403:
             self.denied = True
@@ -233,8 +247,13 @@ class CredentialManager:
 
     def _install(self, creds: DbCreds, pool: Any) -> None:
         with self._lock:
-            old_pool, old_creds = self._pool, self._creds
-            self._pool, self._creds = pool, creds
+            stopping = self._stop.is_set()
+            if not stopping:
+                old_pool, old_creds = self._pool, self._creds
+                self._pool, self._creds = pool, creds
+        if stopping:
+            self._close_pool(pool)  # stop() already cleared the pool: never reopen one
+            raise ShuttingDown
         if old_pool is not None and old_pool is not pool:
             self._close_pool(old_pool)
             log_event(
@@ -343,6 +362,7 @@ class CredentialManager:
     def run_query(self, fn: Callable[[Any], T]) -> T:
         last_exc: BaseException | None = None
         for attempt in range(1, self.max_attempts + 1):
+            self._check_open()
             pool = self._pool
             try:
                 if pool is None:
@@ -378,6 +398,7 @@ class CredentialManager:
                 reason=kind,
             )
             self._sleep(delay)
+            self._check_open()
             try:
                 self._recover(kind, pool)
             except VaultDenied:
@@ -408,7 +429,7 @@ class CredentialManager:
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=STOP_JOIN_SECONDS)
         with self._lock:
             pool, self._pool = self._pool, None
         if pool is not None:
@@ -431,6 +452,8 @@ class CredentialManager:
                     self.refresh()
                 failures = 0
                 continue
+            except ShuttingDown:
+                return
             except VaultDenied:
                 # vault_denied is already logged by fetch_creds. Proxy may have no token yet:
                 # retry with a bounded backoff, keeping any current pool meanwhile.

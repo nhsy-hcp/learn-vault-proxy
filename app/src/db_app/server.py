@@ -25,7 +25,7 @@ from psycopg.rows import dict_row
 
 from db_app import __version__
 from db_app.config import Config, ConfigError
-from db_app.creds import CredentialManager, NoPool, RetriesExhausted
+from db_app.creds import CredentialManager, NoPool, RetriesExhausted, ShuttingDown
 from db_app.kv import KVWatcher
 from db_app.logging_setup import configure_logging, log_event
 from db_app.vault_client import VaultClient, VaultDenied
@@ -117,6 +117,8 @@ def make_handler(app: App) -> type[BaseHTTPRequestHandler]:
                 status, body = handler(parse_qs(parts.query))
             except VaultDenied as exc:
                 status, body = 403, {"error": "vault_denied", "path": exc.path}
+            except ShuttingDown:
+                status, body = 503, {"error": "shutting_down"}
             except (RetriesExhausted, NoPool):
                 status, body = 503, {"error": "database_unavailable"}
             except psycopg.Error as exc:
@@ -196,6 +198,10 @@ def main() -> int:
         log_event(log, logging.ERROR, "config_invalid", error=str(exc))
         return 2
     configure_logging(config.log_level)
+    # Handlers go in before any lease is minted, so a SIGTERM during startup still runs cleanup.
+    stop = threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: stop.set())
     log_event(
         log,
         logging.INFO,
@@ -214,14 +220,14 @@ def main() -> int:
     app = build_app(config)
     if not app.vault.wait_for_socket(max_wait=30.0):
         return 1
+    if stop.is_set():
+        log_event(log, logging.INFO, "stopping", during="startup")
+        return 0  # nothing started, so no lease to revoke
     app.creds.start()
     if app.kv is not None:
         app.kv.start()
 
     server = make_server(app, "0.0.0.0", config.port)  # noqa: S104 - container port
-    stop = threading.Event()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(sig, lambda *_: stop.set())
     thread = threading.Thread(target=server.serve_forever, name="http", daemon=True)
     thread.start()
     log_event(log, logging.INFO, "listening", port=config.port)

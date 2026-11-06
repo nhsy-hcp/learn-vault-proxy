@@ -8,7 +8,7 @@ import psycopg
 import pytest
 
 from conftest import Connector, PoolFactory, creds_response, truncated_response
-from db_app.creds import CredentialManager, RetriesExhausted, classify_db_error
+from db_app.creds import CredentialManager, RetriesExhausted, ShuttingDown, classify_db_error
 from db_app.vault_client import VaultDenied
 
 PATH = "db/creds/preview-payments"
@@ -373,3 +373,85 @@ def test_non_recoverable_sql_error_is_raised(fake_proxy):
 )
 def test_classify_db_error(exc, kind):
     assert classify_db_error(exc) == kind
+
+
+# ------------------------------------------------------------------ shutdown
+
+
+def test_after_stop_no_vault_read_and_no_pool(fake_proxy):
+    state, vault = fake_proxy
+    state.routes[ROUTE] = creds_response("v-user-1")
+    mgr, pools, _, _ = make_manager(vault)
+    mgr.load()
+    mgr.stop()
+    reads = len(state.calls("GET", f"/v1/{PATH}"))
+
+    for call in (mgr.load, mgr.refresh, mgr.whoami):
+        with pytest.raises(ShuttingDown):
+            call()
+
+    assert len(state.calls("GET", f"/v1/{PATH}")) == reads
+    assert len(pools.pools) == 1 and pools.pools[0].closed
+    assert mgr._pool is None
+
+
+def test_refresh_finishing_after_stop_closes_its_pool(fake_proxy):
+    """A refresh still in flight when stop() clears the pool must not install a new one."""
+    state, vault = fake_proxy
+    state.routes[ROUTE] = [creds_response("v-user-1"), creds_response("v-user-2")]
+    mgr, pools, _, _ = make_manager(vault)
+    mgr.load()
+    real_open = mgr._open_pool
+
+    def open_then_stop(creds):
+        pool = real_open(creds)
+        mgr.stop()  # SIGTERM lands while the new pool is being opened
+        return pool
+
+    mgr._open_pool = open_then_stop
+    with pytest.raises(ShuttingDown):
+        mgr.refresh()
+
+    assert len(pools.pools) == 2
+    assert all(p.closed for p in pools.pools)
+    assert mgr._pool is None
+
+
+def test_run_query_recovery_after_stop_does_not_reconnect(fake_proxy):
+    """A request retrying during shutdown gives up: no new pool, no new lease."""
+    state, vault = fake_proxy
+    state.routes[ROUTE] = creds_response("v-user-1")
+    mgr, pools, connector, _ = make_manager(vault)
+    mgr.load()
+    pools.pools[0].failures = [psycopg.OperationalError("server closed the connection")]
+    mgr._sleep = lambda _delay: mgr.stop()  # stop() runs during the retry backoff
+    reads = len(state.calls("GET", f"/v1/{PATH}"))
+    probes = len(connector.calls)
+
+    with pytest.raises(ShuttingDown):
+        mgr.whoami()
+
+    assert len(state.calls("GET", f"/v1/{PATH}")) == reads
+    assert len(connector.calls) == probes
+    assert len(pools.pools) == 1 and mgr._pool is None
+
+
+def test_run_loop_exits_when_stopped_mid_load(fake_proxy, caplog):
+    state, vault = fake_proxy
+    state.routes[ROUTE] = creds_response("v-user-1")
+    waits: list[float] = []
+    mgr, pools, _, _ = make_manager(vault, waiter=stop_after(5, waits))
+    real_open = mgr._open_pool
+
+    def open_then_stop(creds):
+        pool = real_open(creds)
+        mgr._stop.set()
+        return pool
+
+    mgr._open_pool = open_then_stop
+    with caplog.at_level(logging.INFO):
+        mgr._run()
+
+    assert waits == []  # returned straight away: no retry backoff
+    assert events(caplog, "retry") == [] and events(caplog, "creds_loop_error") == []
+    assert len(pools.pools) == 1 and pools.pools[0].closed and mgr._pool is None

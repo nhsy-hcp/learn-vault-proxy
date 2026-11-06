@@ -24,9 +24,16 @@ pod="$(kubectl get pod -l app.kubernetes.io/name=db-app -n "${TARGET}" -o json \
 [ "$(pg_role_count "${old_user}")" = 1 ] || { err "${old_user} not in pg_roles before the test"; exit 1; }
 printf '  %s pod %s uses %s\n' "${TARGET}" "${pod}" "${old_user}"
 
-# Follow the app log until the container exits, to show the revoke-self event
-kubectl logs -f "${pod}" -n "${TARGET}" -c app --since=1s >"${applog}" 2>/dev/null &
+# Follow the whole app log until the container exits, to catch the revoke-self event. Wait until
+# the follower has written the earlier lines, so it is attached before the pod is deleted.
+: >"${applog}"
+kubectl logs -f "${pod}" -n "${TARGET}" -c app >"${applog}" 2>/dev/null &
 logs_pid=$!
+for _ in $(seq 1 20); do
+  [ -s "${applog}" ] && break
+  sleep 0.5
+done
+[ -s "${applog}" ] || { err "kubectl logs did not attach to ${pod}"; kill "${logs_pid}" 2>/dev/null || true; exit 1; }
 
 log "kubectl delete pod ${pod} (SIGTERM -> app closes its pool -> revoke-self through Proxy)"
 start=$(date +%s)
@@ -43,7 +50,8 @@ done
 elapsed=$(( $(date +%s) - start ))
 wait "${logs_pid}" 2>/dev/null || true
 
-status="$(jq -r 'select(.event == "token_revoked_self") | .status' "${applog}" 2>/dev/null | tail -1 || true)"
+# -R + fromjson? skips any line that is not JSON instead of stopping at it
+status="$(jq -Rr 'fromjson? | select(.event == "token_revoked_self") | .status' "${applog}" | tail -1)"
 if [ "${status}" = 204 ]; then
   printf '  PASS  17 app logged token_revoked_self (status 204)\n'
 else

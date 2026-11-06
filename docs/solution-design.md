@@ -130,6 +130,8 @@ The roles differ in privilege, not just in what they can reach: production is re
 
 Group roles own nothing; a bootstrap SQL ConfigMap creates the databases, schemas, tables, group roles and seed rows. `PUBLIC` loses `CONNECT` on both databases, so a dynamic user can only reach the database its group role is granted.
 
+The bootstrap SQL only runs on an empty data directory. `install:postgres` therefore also applies `postgres-upgrade.sql` on every run: an idempotent migration that brings a kept PVC up to the current roles, tables and grants (for example, replacing `production_payments_rw` with `production_payments_ro`). On a fresh lab it changes nothing.
+
 **Vault's own database logins.** Vault connects as `vault_admin_preview` for `pg-preview` and `vault_admin_production` for `pg-production`, never as the `postgres` superuser. Each login has `CREATEROLE`, `CONNECT` on its own database only and `pg_signal_backend` (to end a revoked user's sessions). Only that database's group roles are granted to it `WITH ADMIN OPTION`, which PostgreSQL 16 requires before a `CREATEROLE` user can grant a role. Straight after configuration, `vault write -f db/rotate-root/<connection>` replaces each bootstrap password with one only Vault knows. One login per connection matters: with a shared login, rotating it through one connection breaks the other. The bootstrap passwords are random, generated at install time into the `postgres-credentials` Secret.
 
 **Connections and roles.**
@@ -232,6 +234,7 @@ The app is one small Python service (`db-app`, Python 3.12, `psycopg` 3, standar
 3. Re-read at two thirds of `lease_duration`, capped at 60 s (`CREDS_REFRESH_MAX_SECONDS`). Proxy returns the same cached lease while it is renewable. If the username changed, build a new pool, switch traffic to it and close the old one. The cap means a user dropped at `max_ttl` is replaced within about a minute.
 4. On PostgreSQL error `28P01` (invalid password) or `28000`: call `POST /proxy/v1/cache-clear` for that path, read again, rebuild the pool. Retry with jittered backoff, at most 5 attempts.
 5. On `403` from Vault for its own path: log `vault_denied` and retry with jittered backoff (capped at 30 s), keeping any open pool. A 403 is transient while Proxy has no token (just started, or re-authenticating after an outage). `/try` never retries: its 403 is the expected result of the isolation tests.
+6. On SIGTERM: install the signal handlers before the first Vault read, then stop serving, stop the refresh threads and call `POST /v1/auth/token/revoke-self`, which revokes the Proxy token and its database lease. Once shutdown starts the app makes no further Vault reads and opens no pools, so it cannot mint a lease after the revoke; requests still in flight get `503 shutting_down`.
 
 **Endpoints.**
 
@@ -588,3 +591,4 @@ Implementation review on 2026-11-05 made these changes.
 | 18 | Secret handling in scripts | The root token, unseal keys, reviewer JWT, admin bootstrap passwords and demo DB passwords go to `kubectl exec` on stdin (`IFS= read -r`, `key=-`, `password=-`, `token_reviewer_jwt=-`), never as arguments | Arguments show up in `ps` on the laptop and inside the pod, and in the API-server exec URL |
 | 19 | Lint | `task lint` adds `gitleaks git` over the full history | The pre-commit gitleaks hook scans only staged changes, so `pre-commit run --all-files` checked nothing |
 | 20 | App resilience | A 403 on the app's own path retries with backoff instead of stopping; truncated Proxy responses become transport errors; background loops never exit; refresh capped at 60 s and `fetched_at` kept for an unchanged lease | Review findings: Proxy in `force` mode forwards token-less requests while it re-authenticates, and a cached body always reports the full `lease_duration` |
+| 21 | Shutdown and kept data | Signal handlers before the first lease; no Vault reads or new pools after `stop()`; `postgres-upgrade.sql` on every `install:postgres` | Review findings: a refresh or retry racing shutdown could mint a lease after `revoke-self`, and a lab with a kept PVC never got the read-only production role |

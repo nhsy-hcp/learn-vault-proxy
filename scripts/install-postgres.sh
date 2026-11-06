@@ -31,6 +31,12 @@ kubectl create configmap postgres-bootstrap -n "${NS}" \
 kubectl apply -f "${DIR}/postgres.yaml"
 kubectl rollout status deploy/postgres -n "${NS}" --timeout=5m
 
+# The bootstrap SQL only runs on an empty data directory; bring kept data up to date (no-op when fresh)
+kubectl exec -i deploy/postgres -n "${NS}" -- env PGOPTIONS="-c client_min_messages=warning" \
+  psql -q -U postgres -d postgres -f - \
+  <"${DIR}/postgres-upgrade.sql"
+log "Applied ${DIR}/postgres-upgrade.sql"
+
 log "Databases:"
 kubectl exec deploy/postgres -n "${NS}" -- psql -U postgres -Atc \
   "SELECT datname FROM pg_database WHERE datname IN ('preview','production') ORDER BY 1"

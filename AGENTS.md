@@ -28,7 +28,7 @@ dynamic PostgreSQL credentials on k3d with Vault Community Edition. The design i
 | --- | --- |
 | `Taskfile.yml` | All tasks; version pins and TTL variables at the top |
 | `scripts/` | Bash helpers invoked from the Taskfile |
-| `vault-ce/` | Vault Helm values, RBAC, policies, roles, PostgreSQL manifests and bootstrap SQL, `apps.json` |
+| `vault-ce/` | Vault Helm values, RBAC, policies, roles, PostgreSQL manifests, bootstrap and upgrade SQL, `apps.json` |
 | `templates/` | Per-app manifest templates rendered with `envsubst` |
 | `app/` | `db-app` Python source, tests and Dockerfile |
 | `docs/` | Design, walkthrough and troubleshooting |
