@@ -57,7 +57,7 @@ kubectl get --raw "/api/v1/namespaces/db-app-payments-preview/services/db-app:ht
 | # | Task | Shows |
 | --- | --- | --- |
 | 1, 2, 10 | `task verify:db-app` | No secret in the pod spec; each app reads its own rows and its own API key |
-| 3, 4, 5, 8, 11 | `task demo:isolation` | `403` for other apps and environments, audit-log denials, `permission denied for database`, RBAC blocks annotation edits |
+| 3, 4, 5, 8, 11, 16 | `task demo:isolation` | `403` for other apps and environments, audit-log denials, `permission denied for database`, RBAC blocks annotation edits, production credentials read-only on `payments.items` only |
 | 6 | `task demo:rotation demo_ttl=2m` | Username changes by `max_ttl`, old role dropped (restores TTLs afterwards) |
 | 7 | `task demo:revoke` | Break-glass revoke; the app recovers with a new user within seconds, other apps unaffected |
 | 12 | `task demo:kv-rotate APP=db-app-payments-preview` | New API key version picked up on the next poll |

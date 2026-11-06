@@ -15,14 +15,15 @@ CREATE ROLE vault_admin_production WITH LOGIN CREATEROLE PASSWORD :'vault_admin_
 GRANT pg_signal_backend TO vault_admin_preview, vault_admin_production;
 
 -- Group roles (NOLOGIN, own nothing). PostgreSQL 16 needs ADMIN OPTION before a CREATEROLE user can grant them.
+-- Preview roles are read-write on every table in their schema; the production role is read-only on one table.
 CREATE ROLE preview_payments_rw NOLOGIN;
 CREATE ROLE preview_checkout_rw NOLOGIN;
-CREATE ROLE production_payments_rw NOLOGIN;
+CREATE ROLE production_payments_ro NOLOGIN;
 GRANT preview_payments_rw, preview_checkout_rw TO vault_admin_preview WITH ADMIN OPTION;
-GRANT production_payments_rw TO vault_admin_production WITH ADMIN OPTION;
+GRANT production_payments_ro TO vault_admin_production WITH ADMIN OPTION;
 
 GRANT CONNECT ON DATABASE preview TO preview_payments_rw, preview_checkout_rw, vault_admin_preview;
-GRANT CONNECT ON DATABASE production TO production_payments_rw, vault_admin_production;
+GRANT CONNECT ON DATABASE production TO production_payments_ro, vault_admin_production;
 
 -- ---------------------------------------------------------------------------
 -- Database: preview
@@ -38,6 +39,12 @@ CREATE TABLE payments.items (
 INSERT INTO payments.items (name, note) VALUES
   ('preview-payment-001', 'card authorised'),
   ('preview-payment-002', 'refund pending');
+
+CREATE TABLE payments.card_tokens (
+  id serial PRIMARY KEY,
+  token text NOT NULL
+);
+INSERT INTO payments.card_tokens (token) VALUES ('preview-tok-001');
 
 CREATE SCHEMA checkout;
 CREATE TABLE checkout.items (
@@ -72,6 +79,13 @@ INSERT INTO payments.items (name, note) VALUES
   ('production-payment-001', 'settled'),
   ('CANARY_PROD_PAYMENTS_NEVER_LEAK', 'must never be returned to a preview app');
 
-GRANT USAGE ON SCHEMA payments TO production_payments_rw;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA payments TO production_payments_rw;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA payments TO production_payments_rw;
+-- No grant at all: production app users must get "permission denied for table card_tokens"
+CREATE TABLE payments.card_tokens (
+  id serial PRIMARY KEY,
+  token text NOT NULL
+);
+INSERT INTO payments.card_tokens (token) VALUES ('CANARY_PROD_CARD_TOKEN_NEVER_READ');
+
+-- Read-only, one table: SELECT on items only; no DML, no sequences, nothing on card_tokens
+GRANT USAGE ON SCHEMA payments TO production_payments_ro;
+GRANT SELECT ON payments.items TO production_payments_ro;

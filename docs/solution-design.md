@@ -122,9 +122,11 @@ The database secrets engine at `db/` creates a new PostgreSQL login for every le
 
 | Database | Schema | Group role (`NOLOGIN`) | Grants |
 | --- | --- | --- | --- |
-| `preview` | `payments` | `preview_payments_rw` | `USAGE` on schema; `SELECT, INSERT, UPDATE, DELETE` on its tables |
+| `preview` | `payments` | `preview_payments_rw` | `USAGE` on schema; `SELECT, INSERT, UPDATE, DELETE` on all its tables (`items`, `card_tokens`) |
 | `preview` | `checkout` | `preview_checkout_rw` | Same, on `checkout` |
-| `production` | `payments` | `production_payments_rw` | Same; one table holds the canary row `CANARY_PROD_PAYMENTS_NEVER_LEAK` |
+| `production` | `payments` | `production_payments_ro` | `USAGE` on schema; `SELECT` on `items` only. No DML, no sequences, nothing on `card_tokens`. `items` holds the canary row `CANARY_PROD_PAYMENTS_NEVER_LEAK` |
+
+The roles differ in privilege, not just in what they can reach: production is read-only on a single table, which shows table-level least privilege (scenario 16). `db-app` only reads `<schema>.items`, so it runs unchanged in both environments.
 
 Group roles own nothing; a bootstrap SQL ConfigMap creates the databases, schemas, tables, group roles and seed rows. `PUBLIC` loses `CONNECT` on both databases, so a dynamic user can only reach the database its group role is granted.
 
@@ -338,6 +340,7 @@ The demo passes when every row below shows its expected result from a fresh `tas
 | 6 | Rotation | `demo:rotation` | Watch `/whoami` for 35 minutes, or shorten TTLs with `demo_ttl=2m` | Username changes at or before `max_ttl`; old role gone from `pg_roles` |
 | 7 | Break-glass revoke | `demo:revoke` | `vault lease revoke -prefix db/creds/preview-payments` | App logs `28P01`, clears its cache entry, gets a new user within 30 s; other apps unaffected |
 | 8 | Annotation tampering is blocked by RBAC | `demo:isolation` | As the app-team user, `kubectl annotate sa … environment=production` | `forbidden`; no Vault change needed |
+| 16 | Read-only production, one table | `demo:isolation` | With production-payments credentials, `SELECT` and `INSERT` on `payments.items`, `SELECT` on `payments.card_tokens` | `SELECT` on `items` works; the other two fail with `permission denied for table …` |
 | 9 | Restart survival | manual | `task cluster:stop`, `cluster:up`, `unseal:vault` | Policies, roles and connections intact; apps recover new credentials |
 
 KV v2 and outage scenarios:
@@ -513,8 +516,9 @@ GRANT pg_signal_backend TO vault_admin_preview, vault_admin_production;
 CREATE ROLE preview_payments_rw NOLOGIN;
 GRANT CONNECT ON DATABASE preview TO preview_payments_rw, vault_admin_preview;
 GRANT preview_payments_rw TO vault_admin_preview WITH ADMIN OPTION;
--- repeat for preview_checkout_rw (vault_admin_preview) and production_payments_rw (vault_admin_production),
--- then per database: CREATE SCHEMA, tables, seed rows, GRANT USAGE and DML to the group role
+-- repeat for preview_checkout_rw (vault_admin_preview) and production_payments_ro (vault_admin_production),
+-- then per database: CREATE SCHEMA, tables, seed rows, GRANT USAGE and DML to the preview group roles
+GRANT SELECT ON payments.items TO production_payments_ro;  -- production: read-only, one table
 ```
 
 **G. KV v2 seeding and the Enterprise cache toggle (`scripts/config-kv-secret.sh`, excerpt)**

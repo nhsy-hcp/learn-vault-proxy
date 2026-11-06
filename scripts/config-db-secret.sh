@@ -26,7 +26,7 @@ CONNECTIONS=(
 ROLES=(
   "preview-payments|pg-preview|preview_payments_rw"
   "preview-checkout|pg-preview|preview_checkout_rw"
-  "production-payments|pg-production|production_payments_rw"
+  "production-payments|pg-production|production_payments_ro"
 )
 
 # Bootstrap password for an admin login, from the postgres-credentials Secret (never printed)
