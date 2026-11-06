@@ -40,3 +40,10 @@ def test_missing_required():
 def test_bad_number():
     with pytest.raises(ConfigError):
         Config.from_env({**BASE, "DB_PORT": "x"})
+
+
+@pytest.mark.parametrize("name", ["KV_REFRESH_SECONDS", "CREDS_REFRESH_MAX_SECONDS"])
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "inf"])
+def test_refresh_interval_must_be_positive(name, value):
+    with pytest.raises(ConfigError, match=name):
+        Config.from_env({**BASE, name: value})

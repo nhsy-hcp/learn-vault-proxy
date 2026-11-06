@@ -52,6 +52,13 @@ psql_as() {
     sh -c 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql "$@"' sh -h 127.0.0.1 -U "${user}" "$@"
 }
 
+# Number of PostgreSQL roles named <role>: 1 while a dynamic user exists, 0 once Vault dropped it.
+# Usage: pg_role_count <role>
+pg_role_count() {
+  kubectl exec deploy/postgres -n postgres -- psql -U postgres -Atc \
+    "SELECT count(*) FROM pg_roles WHERE rolname = '$1'"
+}
+
 # Names of every app instance in apps.json (one per line)
 app_names() { jq -r '.[].name' "${APPS_FILE}"; }
 

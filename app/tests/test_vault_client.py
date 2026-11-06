@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.client
+import logging
 
 import pytest
 
@@ -78,3 +79,15 @@ def test_revoke_self_request_shape(fake_proxy):
     assert req.headers["X-Vault-Request"] == "true"
     assert "X-Vault-Token" not in req.headers
     assert req.body is None
+
+
+@pytest.mark.parametrize(("status", "level"), [(204, logging.INFO), (403, logging.WARNING)])
+def test_revoke_self_logs_failure_as_warning(fake_proxy, caplog, status, level):
+    state, vault = fake_proxy
+    state.routes["POST /v1/auth/token/revoke-self"] = (status, {}, None)
+
+    with caplog.at_level(logging.INFO):
+        vault.revoke_self()
+
+    (rec,) = [r for r in caplog.records if r.getMessage() == "token_revoked_self"]
+    assert rec.levelno == level

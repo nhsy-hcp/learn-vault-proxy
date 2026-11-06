@@ -140,7 +140,8 @@ class VaultClient:
         shutdown, after the pool is closed. Raises OSError if the socket cannot be reached.
         """
         status, _, _ = self._request("POST", "/v1/auth/token/revoke-self")
-        log_event(log, logging.INFO, "token_revoked_self", status=status)
+        level = logging.INFO if 200 <= status < 300 else logging.WARNING
+        log_event(log, level, "token_revoked_self", status=status)
         return status
 
     def wait_for_socket(self, max_wait: float = 30.0, interval: float = 0.5) -> bool:

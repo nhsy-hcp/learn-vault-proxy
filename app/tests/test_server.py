@@ -8,10 +8,11 @@ import threading
 import pytest
 
 from conftest import Connector, PoolFactory, creds_response, kv_response
+from db_app import server as server_mod
 from db_app.config import Config
 from db_app.creds import CredentialManager
 from db_app.kv import KVWatcher, fingerprint
-from db_app.server import App, make_server, revoke_on_shutdown
+from db_app.server import App, make_server, revoke_on_shutdown, shutdown
 from db_app.vault_client import VaultClient
 
 CREDS = "db/creds/preview-payments"
@@ -207,3 +208,28 @@ def test_revoke_on_shutdown_never_raises_without_proxy(socket_dir, caplog):
 
     (rec,) = _revoke_events(caplog)
     assert rec.levelno == logging.WARNING
+
+
+class _Recorder:
+    def __init__(self, calls: list[str], name: str):
+        self.calls, self.name = calls, name
+
+    def __getattr__(self, method: str):
+        return lambda *_: self.calls.append(f"{self.name}.{method}")
+
+
+def test_shutdown_order(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(server_mod, "revoke_on_shutdown", lambda _: calls.append("revoke"))
+    app = App(None, None, _Recorder(calls, "creds"), _Recorder(calls, "kv"))  # type: ignore[arg-type]
+
+    shutdown(app, _Recorder(calls, "server"))  # type: ignore[arg-type]
+
+    # No requests while the pool closes, and the pool closed before its user is revoked
+    assert calls == [
+        "server.shutdown",
+        "server.server_close",
+        "kv.stop",
+        "creds.stop",
+        "revoke",
+    ]

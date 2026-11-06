@@ -234,7 +234,7 @@ The app is one small Python service (`db-app`, Python 3.12, `psycopg` 3, standar
 3. Re-read at two thirds of `lease_duration`, capped at 60 s (`CREDS_REFRESH_MAX_SECONDS`). Proxy returns the same cached lease while it is renewable. If the username changed, build a new pool, switch traffic to it and close the old one. The cap means a user dropped at `max_ttl` is replaced within about a minute.
 4. On PostgreSQL error `28P01` (invalid password) or `28000`: call `POST /proxy/v1/cache-clear` for that path, read again, rebuild the pool. Retry with jittered backoff, at most 5 attempts.
 5. On `403` from Vault for its own path: log `vault_denied` and retry with jittered backoff (capped at 30 s), keeping any open pool. A 403 is transient while Proxy has no token (just started, or re-authenticating after an outage). `/try` never retries: its 403 is the expected result of the isolation tests.
-6. On SIGTERM: install the signal handlers before the first Vault read, then stop serving, stop the refresh threads and call `POST /v1/auth/token/revoke-self`, which revokes the Proxy token and its database lease. Once shutdown starts the app makes no further Vault reads and opens no pools, so it cannot mint a lease after the revoke; requests still in flight get `503 shutting_down`.
+6. On SIGTERM: install the signal handlers before the first Vault read, then stop serving, stop the refresh threads and call `POST /v1/auth/token/revoke-self`, which revokes the Proxy token and its database lease. The app logs `token_revoked_self` with the status, at `WARNING` when it is not `2xx`. Once shutdown starts the app makes no further Vault reads and opens no pools, so it cannot mint a lease after the revoke; requests still in flight get `503 shutting_down`.
 
 **Endpoints.**
 
@@ -248,6 +248,8 @@ The app is one small Python service (`db-app`, Python 3.12, `psycopg` 3, standar
 `/try` is the stand-in for a compromised or prompt-injected workload. It is disabled unless `DEMO_MODE=true`, and it returns only the status code, never credential values.
 
 **KV v2 additions.** Two more non-secret settings, `API_KEY_PATH` (for example `kvv2/data/preview/payments/api-key`) and `KV_REFRESH_SECONDS` (default `30`), and one more endpoint, `/apikey`, which returns only the version, fingerprint, source, cache headers and staleness described in section 6a. `/try` also accepts KV paths, so the same denial can be shown for `kvv2/data/production/payments/api-key`.
+
+Both refresh intervals, `KV_REFRESH_SECONDS` and `CREDS_REFRESH_MAX_SECONDS`, must be positive and finite; the app exits with `config_invalid` otherwise, since `0` would make the KV loop poll Vault without pausing.
 
 ## 9. Platform and Taskfile automation
 
@@ -592,3 +594,4 @@ Implementation review on 2026-11-05 made these changes.
 | 19 | Lint | `task lint` adds `gitleaks git` over the full history | The pre-commit gitleaks hook scans only staged changes, so `pre-commit run --all-files` checked nothing |
 | 20 | App resilience | A 403 on the app's own path retries with backoff instead of stopping; truncated Proxy responses become transport errors; background loops never exit; refresh capped at 60 s and `fetched_at` kept for an unchanged lease | Review findings: Proxy in `force` mode forwards token-less requests while it re-authenticates, and a cached body always reports the full `lease_duration` |
 | 21 | Shutdown and kept data | Signal handlers before the first lease; no Vault reads or new pools after `stop()`; `postgres-upgrade.sql` on every `install:postgres` | Review findings: a refresh or retry racing shutdown could mint a lease after `revoke-self`, and a lab with a kept PVC never got the read-only production role |
+| 22 | Config and shutdown checks | Refresh intervals must be positive; a failed `revoke-self` logs at `WARNING`; the shutdown sequence is one `shutdown()` function with an order test; `pg_role_count` lives in `scripts/lib.sh` | Review findings 6–9: `KV_REFRESH_SECONDS=0` polled Vault in a tight loop, and a `403` revoke was logged at `INFO` |

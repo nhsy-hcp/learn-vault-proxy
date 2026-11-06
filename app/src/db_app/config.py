@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -11,6 +12,14 @@ _TRUE = {"1", "true", "yes", "on"}
 
 class ConfigError(ValueError):
     pass
+
+
+def _positive_seconds(env: Mapping[str, str], name: str, default: str) -> float:
+    """A refresh interval: 0, negative or NaN would make a loop poll Vault without pausing."""
+    value = float(env.get(name, default))
+    if not math.isfinite(value) or value <= 0:
+        raise ConfigError(f"{name} must be a positive number of seconds")
+    return value
 
 
 @dataclass(frozen=True)
@@ -47,8 +56,8 @@ class Config:
                 db_port=int(env.get("DB_PORT", "5432")),
                 db_schema=required("DB_SCHEMA"),
                 api_key_path=env.get("API_KEY_PATH", "").strip().strip("/"),
-                kv_refresh_seconds=float(env.get("KV_REFRESH_SECONDS", "30")),
-                creds_refresh_max_seconds=float(env.get("CREDS_REFRESH_MAX_SECONDS", "60")),
+                kv_refresh_seconds=_positive_seconds(env, "KV_REFRESH_SECONDS", "30"),
+                creds_refresh_max_seconds=_positive_seconds(env, "CREDS_REFRESH_MAX_SECONDS", "60"),
                 demo_mode=env.get("DEMO_MODE", "false").strip().lower() in _TRUE,
                 log_level=env.get("LOG_LEVEL", "INFO").strip().upper() or "INFO",
                 port=int(env.get("PORT", "8080")),

@@ -190,6 +190,18 @@ def revoke_on_shutdown(vault: VaultClient) -> None:
         log_event(log, logging.WARNING, "revoke_self_failed", status=status)
 
 
+def shutdown(app: App, server: ThreadingHTTPServer) -> None:
+    """Stop taking requests, stop the background loops and close the pool, then revoke."""
+    server.shutdown()
+    server.server_close()
+    if app.kv is not None:
+        app.kv.stop()
+    app.creds.stop()
+    # Pool closed first, so revocation never terminates a session still in use. Proxy is a
+    # native sidecar and stops after this container, so the socket is still served here.
+    revoke_on_shutdown(app.vault)
+
+
 def main() -> int:
     configure_logging("INFO")
     try:
@@ -234,12 +246,5 @@ def main() -> int:
 
     stop.wait()
     log_event(log, logging.INFO, "stopping")
-    server.shutdown()
-    server.server_close()
-    if app.kv is not None:
-        app.kv.stop()
-    app.creds.stop()
-    # Pool closed first, so revocation never terminates a session still in use. Proxy is a
-    # native sidecar and stops after this container, so the socket is still served here.
-    revoke_on_shutdown(app.vault)
+    shutdown(app, server)
     return 0

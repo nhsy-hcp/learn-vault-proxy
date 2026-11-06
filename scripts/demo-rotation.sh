@@ -59,7 +59,6 @@ done
 printf '  PASS  6  %s -> %s after %ss\n' "${first}" "${new}" "$(( $(date +%s) - start ))"
 
 sleep 5
-left="$(kubectl exec deploy/postgres -n postgres -- psql -U postgres -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '${first}'")"
-[ "${left}" = 0 ] || { err "old role ${first} still in pg_roles"; exit 1; }
+[ "$(pg_role_count "${first}")" = 0 ] || { err "old role ${first} still in pg_roles"; exit 1; }
 printf '  PASS  6  old role %s gone from pg_roles\n' "${first}"
 log "demo:rotation passed"

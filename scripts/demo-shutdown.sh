@@ -13,11 +13,6 @@ TIMEOUT="${2:-45}"
 mkdir -p .tmp
 applog=".tmp/demo-shutdown-app.log"
 
-pg_role_count() {
-  kubectl exec deploy/postgres -n postgres -- psql -U postgres -Atc \
-    "SELECT count(*) FROM pg_roles WHERE rolname = '$1'"
-}
-
 old_user="$(app_get "${TARGET}" /whoami | jq -r .current_user)"
 pod="$(kubectl get pod -l app.kubernetes.io/name=db-app -n "${TARGET}" -o json \
   | jq -r '[.items[] | select(.metadata.deletionTimestamp == null)][0].metadata.name')"

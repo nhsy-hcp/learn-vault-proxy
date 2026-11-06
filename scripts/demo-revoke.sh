@@ -43,9 +43,7 @@ if [ -z "${new_user}" ]; then
 fi
 printf '  PASS  7  %s: %s -> %s in %ss\n' "${TARGET}" "${old_user}" "${new_user}" "${elapsed}"
 
-gone="$(kubectl exec deploy/postgres -n postgres -- psql -U postgres -Atc \
-  "SELECT count(*) FROM pg_roles WHERE rolname = '${old_user}'")"
-[ "${gone}" = 0 ] || { err "old role ${old_user} still in pg_roles"; exit 1; }
+[ "$(pg_role_count "${old_user}")" = 0 ] || { err "old role ${old_user} still in pg_roles"; exit 1; }
 printf '  PASS  7  old role dropped from pg_roles\n'
 
 for app in $(app_names); do
