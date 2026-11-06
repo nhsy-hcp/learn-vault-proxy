@@ -58,7 +58,14 @@ done
 [ -n "${new}" ] || { err "username did not change within ${timeout}s"; exit 1; }
 printf '  PASS  6  %s -> %s after %ss\n' "${first}" "${new}" "$(( $(date +%s) - start ))"
 
-sleep 5
-[ "$(pg_role_count "${first}")" = 0 ] || { err "old role ${first} still in pg_roles"; exit 1; }
-printf '  PASS  6  old role %s gone from pg_roles\n' "${first}"
+# The user can change before the old lease ends: Proxy logs in again when its own token nears
+# token_max_ttl, and the next read mints a new lease. The old role is then dropped at its own
+# max_ttl, so keep checking until the watch budget runs out (at least 60 s more).
+deadline=$(( start + timeout ))
+[ "${deadline}" -gt $(( $(date +%s) + 60 )) ] || deadline=$(( $(date +%s) + 60 ))
+until [ "$(pg_role_count "${first}")" = 0 ]; do
+  [ "$(date +%s)" -lt "${deadline}" ] || { err "old role ${first} still in pg_roles"; exit 1; }
+  sleep 5
+done
+printf '  PASS  6  old role %s gone from pg_roles after %ss\n' "${first}" "$(( $(date +%s) - start ))"
 log "demo:rotation passed"
