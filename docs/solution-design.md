@@ -341,6 +341,7 @@ The demo passes when every row below shows its expected result from a fresh `tas
 | 7 | Break-glass revoke | `demo:revoke` | `vault lease revoke -prefix db/creds/preview-payments` | App logs `28P01`, clears its cache entry, gets a new user within 30 s; other apps unaffected |
 | 8 | Annotation tampering is blocked by RBAC | `demo:isolation` | As the app-team user, `kubectl annotate sa … environment=production` | `forbidden`; no Vault change needed |
 | 16 | Read-only production, one table | `demo:isolation` | With production-payments credentials, `SELECT` and `INSERT` on `payments.items`, `SELECT` on `payments.card_tokens` | `SELECT` on `items` works; the other two fail with `permission denied for table …` |
+| 17 | Shutdown revokes its own user | `demo:shutdown` | Delete the app pod | App logs `token_revoked_self` (`204`); its database user leaves `pg_roles` within seconds, not at `max_ttl`; the replacement pod gets a new user |
 | 9 | Restart survival | manual | `task cluster:stop`, `cluster:up`, `unseal:vault` | Policies, roles and connections intact; apps recover new credentials |
 
 KV v2 and outage scenarios:

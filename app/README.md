@@ -53,6 +53,12 @@ PostgreSQL connections use `sslmode=disable` (demo only).
 - Background loops never die: a truncated Proxy response (`IncompleteRead` and other
   `http.client` errors) is raised as a `ConnectionError`, and any unexpected exception is logged
   (`creds_loop_error` / `kv_loop_error`) and retried with backoff.
+- On `SIGTERM`/`SIGINT` the app stops serving, closes its pool, then calls
+  `POST /v1/auth/token/revoke-self` through Proxy. That revokes the pod's Proxy token and every
+  lease made with it, so the dynamic database user is dropped straight away instead of at `max_ttl`.
+  Vault's built-in `default` policy allows it; no extra policy is needed. It is best effort: a
+  failure logs `revoke_self_failed` (WARNING) and shutdown continues. Proxy is a native sidecar
+  and stops after the app, so the socket is still served at this point.
 - Logs are JSON lines on stdout (`ts`, `level`, `event` plus context), for `kubectl logs`.
   `/healthz` requests are not access-logged. Passwords and the API key are never logged.
 

@@ -66,3 +66,15 @@ def test_truncated_response_raises_transport_error(fake_proxy):
 
     assert isinstance(info.value, OSError)
     assert isinstance(info.value.__cause__, http.client.IncompleteRead)
+
+
+def test_revoke_self_request_shape(fake_proxy):
+    state, vault = fake_proxy
+    state.routes["POST /v1/auth/token/revoke-self"] = (204, {}, None)
+
+    assert vault.revoke_self() == 204
+
+    (req,) = state.calls("POST", "/v1/auth/token/revoke-self")
+    assert req.headers["X-Vault-Request"] == "true"
+    assert "X-Vault-Token" not in req.headers
+    assert req.body is None

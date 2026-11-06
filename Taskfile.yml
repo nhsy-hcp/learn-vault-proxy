@@ -254,7 +254,7 @@ tasks:
   # Demo scenarios (docs/solution-design.md section 11)
   # ==========================================================================
   demo:isolation:
-    desc: Scenarios 3, 4, 5, 8, 11 - cross-app, cross-env, DB-level and RBAC isolation
+    desc: Scenarios 3, 4, 5, 8, 11, 16 - cross-app, cross-env, DB-level, read-only and RBAC isolation
     cmds:
       - scripts/demo-isolation.sh
 
@@ -269,6 +269,11 @@ tasks:
     desc: Scenario 7 - break-glass revoke of payments-preview database users
     cmds:
       - scripts/demo-revoke.sh
+
+  demo:shutdown:
+    desc: "Scenario 17 - pod shutdown revokes its own DB user (APP=db-app-payments-preview)"
+    cmds:
+      - scripts/demo-shutdown.sh {{.APP | default "db-app-payments-preview"}}
 
   demo:kv-rotate:
     desc: "Scenario 12 - new API key version for one app (APP=db-app-payments-preview)"

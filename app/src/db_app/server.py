@@ -177,6 +177,17 @@ def build_app(config: Config) -> App:
     return App(config, vault, creds, kv)
 
 
+def revoke_on_shutdown(vault: VaultClient) -> None:
+    """Best effort: revoke Proxy's token (and the DB lease) on the way out; never raise."""
+    try:
+        status = vault.revoke_self()
+    except OSError as exc:
+        log_event(log, logging.WARNING, "revoke_self_failed", error=type(exc).__name__)
+        return
+    if status != 204:
+        log_event(log, logging.WARNING, "revoke_self_failed", status=status)
+
+
 def main() -> int:
     configure_logging("INFO")
     try:
@@ -222,4 +233,7 @@ def main() -> int:
     if app.kv is not None:
         app.kv.stop()
     app.creds.stop()
+    # Pool closed first, so revocation never terminates a session still in use. Proxy is a
+    # native sidecar and stops after this container, so the socket is still served here.
+    revoke_on_shutdown(app.vault)
     return 0

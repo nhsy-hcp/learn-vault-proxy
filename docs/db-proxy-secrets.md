@@ -60,6 +60,7 @@ kubectl get --raw "/api/v1/namespaces/db-app-payments-preview/services/db-app:ht
 | 3, 4, 5, 8, 11, 16 | `task demo:isolation` | `403` for other apps and environments, audit-log denials, `permission denied for database`, RBAC blocks annotation edits, production credentials read-only on `payments.items` only |
 | 6 | `task demo:rotation demo_ttl=2m` | Username changes by `max_ttl`, old role dropped (restores TTLs afterwards) |
 | 7 | `task demo:revoke` | Break-glass revoke; the app recovers with a new user within seconds, other apps unaffected |
+| 17 | `task demo:shutdown APP=db-app-payments-preview` | A deleted pod revokes its own Proxy token, so its database user is dropped within seconds |
 | 12 | `task demo:kv-rotate APP=db-app-payments-preview` | New API key version picked up on the next poll |
 | 13, 15 | `task demo:outage outage_minutes=2` | Vault sealed: API key served from app memory (`stale=true`), DB sessions keep working; recovery after unseal |
 | 14 | `task demo:outage:new-pod` | A pod restarted while Vault is sealed never becomes Ready |

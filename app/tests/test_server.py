@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import logging
 import threading
 
 import pytest
@@ -10,7 +11,8 @@ from conftest import Connector, PoolFactory, creds_response, kv_response
 from db_app.config import Config
 from db_app.creds import CredentialManager
 from db_app.kv import KVWatcher, fingerprint
-from db_app.server import App, make_server
+from db_app.server import App, make_server, revoke_on_shutdown
+from db_app.vault_client import VaultClient
 
 CREDS = "db/creds/preview-payments"
 KVPATH = "kvv2/data/preview/payments/api-key"
@@ -157,3 +159,39 @@ def test_access_log_skips_healthz(serve, caplog):
         get("/whoami")
     paths = [r.fields["path"] for r in caplog.records if r.getMessage() == "http_request"]
     assert paths == ["/whoami"]
+
+
+def _revoke_events(caplog):
+    return [r for r in caplog.records if r.getMessage() == "revoke_self_failed"]
+
+
+def test_revoke_on_shutdown_success_logs_no_warning(fake_proxy, caplog):
+    state, vault = fake_proxy
+    state.routes["POST /v1/auth/token/revoke-self"] = (204, {}, None)
+
+    with caplog.at_level(logging.INFO):
+        revoke_on_shutdown(vault)
+
+    assert len(state.calls("POST", "/v1/auth/token/revoke-self")) == 1
+    assert _revoke_events(caplog) == []
+
+
+def test_revoke_on_shutdown_denied_logs_warning(fake_proxy, caplog):
+    state, vault = fake_proxy
+    state.routes["POST /v1/auth/token/revoke-self"] = (403, {}, {"errors": ["permission denied"]})
+
+    with caplog.at_level(logging.INFO):
+        revoke_on_shutdown(vault)
+
+    (rec,) = _revoke_events(caplog)
+    assert rec.levelno == logging.WARNING
+
+
+def test_revoke_on_shutdown_never_raises_without_proxy(socket_dir, caplog):
+    vault = VaultClient(str(socket_dir / "missing.sock"), timeout=0.2)
+
+    with caplog.at_level(logging.INFO):
+        revoke_on_shutdown(vault)
+
+    (rec,) = _revoke_events(caplog)
+    assert rec.levelno == logging.WARNING

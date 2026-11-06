@@ -131,6 +131,18 @@ class VaultClient:
         log_event(log, logging.INFO, "cache_cleared", path=path, status=status)
         return status
 
+    def revoke_self(self) -> int:
+        """``POST /v1/auth/token/revoke-self`` -> HTTP status (204 on success).
+
+        Proxy adds its own auto-auth token, so this revokes the pod's Proxy token and, with it,
+        every lease created with it: the dynamic database user is dropped straight away instead of
+        living until ``max_ttl``. Allowed by Vault's built-in ``default`` policy. Call it only on
+        shutdown, after the pool is closed. Raises OSError if the socket cannot be reached.
+        """
+        status, _, _ = self._request("POST", "/v1/auth/token/revoke-self")
+        log_event(log, logging.INFO, "token_revoked_self", status=status)
+        return status
+
     def wait_for_socket(self, max_wait: float = 30.0, interval: float = 0.5) -> bool:
         """Retry connecting to the socket for up to ``max_wait`` seconds."""
         start = time.monotonic()
