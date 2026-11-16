@@ -11,13 +11,14 @@ For the detailed architecture, see the [solution design](docs/solution-design.md
 ## Prerequisites
 
 kubectl, helm, k3d, docker or podman, jq, task, uv, pre-commit, shellcheck, gitleaks, yamllint, hadolint, ruff,
-envsubst and openssl. Check them with `task deps`.
+envsubst and openssl. Check them with `task deps`. Optional: the `vault` CLI (for `task status`) and k9s.
 
 ## Quick start
 
 ```bash
 task init             # pre-commit hooks, Helm repo, .env, app venv
 task all              # cluster, Vault CE, PostgreSQL, 3 apps, verify (about 5 min)
+task test:all         # unit tests, verify:db-app and demo:isolation: the one-command acceptance check
 task demo:isolation   # cross-app and cross-environment reads are denied
 task demo:revoke      # break-glass revoke; the app recovers with a new user
 task logs             # follow the app's JSON logs (or use k9s)

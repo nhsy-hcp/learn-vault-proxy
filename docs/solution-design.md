@@ -1,6 +1,6 @@
 # Solution Design: Vault Workload Identity, Vault Proxy and Dynamic PostgreSQL Credentials on k3d
 
-Nov 4, 2026 · @Narish Samplay
+Nov 16, 2026 · @Narish Samplay
 
 ## 1. Executive summary
 
@@ -12,7 +12,7 @@ Key decisions:
 - **Authorisation:** one ACL policy templated on alias metadata grants `read` on `db/creds/<environment>-<application_name>` only. A missing annotation grants nothing.
 - **Delivery:** Vault Proxy runs as a native sidecar, listens only on a UNIX socket shared with the app, forces its own auto-auth token and caches and renews the database lease. The Vault token never touches disk.
 - **Credentials:** the database secrets engine issues one PostgreSQL user per lease (10 min default, 30 min max), each inheriting a pre-created group role for its own schema. A KV v2 API key per app (kvv2/data/\<environment>/\<application\_name>/api-key) exercises the static-secret path, including what happens when Vault is down.
-- **Platform:** follows the k3d, Taskfile and `kubectl exec vault-0` conventions of [nhsy-hcp/learn-vault-secrets-operator](https://github.com/nhsy-hcp/learn-vault-secrets-operator), with Vault CE as a single-node Raft cluster on `localhost:8200`.
+- **Platform:** follows the k3d, Taskfile and `kubectl exec vault-0` conventions of [nhsy-hcp/learn-vault-secrets-operator](https://github.com/nhsy-hcp/learn-vault-secrets-operator) (below, "the reference repo"), with Vault CE as a single-node Raft cluster on `localhost:8200`.
 
 ## 2. Context, goals and scope
 
@@ -52,7 +52,7 @@ version-free overview, `docs/images/overview.png`.
 
 Each pod proves who it is with a projected ServiceAccount token; Vault validates it through the Kubernetes TokenReview API and copies the ServiceAccount's `vault.hashicorp.com/alias-metadata-*` annotations onto the entity alias.
 
-**Identities.** One namespace and one ServiceAccount per app instance, following the repo's `pki-app-N` pattern:
+**Identities.** One namespace and one ServiceAccount per app instance, following the reference repo's `pki-app-N` pattern:
 
 | Namespace | ServiceAccount | `application_name` | `environment` | `team` |
 | --- | --- | --- | --- | --- |
@@ -60,10 +60,10 @@ Each pod proves who it is with a projected ServiceAccount token; Vault validates
 | `db-app-checkout-preview` | `db-app-checkout-preview-sa` | `checkout` | `preview` | `e-commerce` |
 | `db-app-payments-production` | `db-app-payments-production-sa` | `payments` | `production` | `platform` |
 
-**Auth mount.** `auth/kubernetes-auth-mount` (type `kubernetes`), configured as in the repo's `scripts/config-pki-secret.sh`:
+**Auth mount.** `auth/kubernetes-auth-mount` (type `kubernetes`), configured as in the reference repo's `scripts/config-pki-secret.sh`:
 
 - `kubernetes_host` = the in-cluster API address; `token_reviewer_jwt` = the long-lived token of `vault/vault-token-reviewer`, which is bound to `system:auth-delegator`.
-- `use_annotations_as_alias_metadata=true`. Vault needs `get` on `serviceaccounts` for this; the repo's `vault-sa-reader` ClusterRole grants exactly that and nothing more.
+- `use_annotations_as_alias_metadata=true`. Vault needs `get` on `serviceaccounts` for this; the reference repo's `vault-sa-reader` ClusterRole grants exactly that and nothing more.
 - Only annotations with the `alias-metadata-` prefix are copied, each up to 512 characters. Metadata is refreshed at every login, so an annotation change takes effect on the next Proxy re-authentication.
 
 **Role `db-app`.**
@@ -80,7 +80,7 @@ Each pod proves who it is with a projected ServiceAccount token; Vault validates
 
 **Projected token.** Mounted only into the Proxy container at `/var/run/secrets/vault/token`, `audience: vault`, `expirationSeconds: 600`. The kubelet rotates it; Proxy re-reads the file at each login. The default ServiceAccount token is not mounted (`automountServiceAccountToken: false`), so the app container holds no Kubernetes credential at all.
 
-**Departure from the repo:** the repo enables `anonymous-auth` on the k3s API server for its JWT auth examples. Kubernetes auth uses TokenReview instead, so this design leaves anonymous auth off.
+**Departure from the reference repo:** the reference repo enables `anonymous-auth` on the k3s API server for its JWT auth examples. Kubernetes auth uses TokenReview instead, so this design leaves anonymous auth off.
 
 ## 5. Authorisation: one templated policy
 
@@ -108,7 +108,7 @@ With `vault_edition=ent`, the Taskfile also attaches `db-app-kv-events` (appendi
 
 Design rules:
 
-- **The accessor is mandatory.** Alias metadata is addressed as `identity.entity.aliases.<mount accessor>.metadata.<key>`; there is no shorthand by mount name. The Taskfile reads the accessor after enabling the mount and substitutes it with `sed`, exactly as the repo does for `pki-secret.hcl`.
+- **The accessor is mandatory.** Alias metadata is addressed as `identity.entity.aliases.<mount accessor>.metadata.<key>`; there is no shorthand by mount name. `scripts/config-k8s-auth.sh` reads the accessor after enabling the mount and substitutes it with `sed`, exactly as the reference repo does for `pki-secret.hcl`.
 - **Fail closed.** If either annotation is missing, the template cannot resolve and the path matches nothing.
 - **No wildcards.** The path is exact, so `preview-payments-admin` or any other suffix is not reachable.
 - **Lease renewal needs no extra grant.** Vault Proxy renews the lease with the same token, and the built-in `default` policy already allows `sys/leases/renew` and `auth/token/renew-self`.
@@ -118,17 +118,17 @@ Design rules:
 
 The database secrets engine at `db/` creates a new PostgreSQL login for every lease, grants it one pre-created group role, and drops it when the lease ends; no application password exists anywhere until a pod asks for one.
 
-**PostgreSQL layout** (one instance in namespace `postgres`, `postgres:16-alpine` as in the repo):
+**PostgreSQL layout** (one instance in namespace `postgres`, `postgres:16-alpine` as in the reference repo):
 
 | Database | Schema | Group role (`NOLOGIN`) | Grants |
 | --- | --- | --- | --- |
-| `preview` | `payments` | `preview_payments_rw` | `USAGE` on schema; `SELECT, INSERT, UPDATE, DELETE` on all its tables (`items`, `card_tokens`) |
+| `preview` | `payments` | `preview_payments_rw` | `USAGE` on schema; `SELECT, INSERT, UPDATE, DELETE` on all its tables (`items`, `card_tokens`); `USAGE, SELECT` on its sequences |
 | `preview` | `checkout` | `preview_checkout_rw` | Same, on `checkout` |
 | `production` | `payments` | `production_payments_ro` | `USAGE` on schema; `SELECT` on `items` only. No DML, no sequences, nothing on `card_tokens`. `items` holds the canary row `CANARY_PROD_PAYMENTS_NEVER_LEAK` |
 
 The roles differ in privilege, not just in what they can reach: production is read-only on a single table, which shows table-level least privilege (scenario 16). `db-app` only reads `<schema>.items`, so it runs unchanged in both environments.
 
-Group roles own nothing; a bootstrap SQL ConfigMap creates the databases, schemas, tables, group roles and seed rows. `PUBLIC` loses `CONNECT` on both databases, so a dynamic user can only reach the database its group role is granted.
+Group roles own nothing; a bootstrap SQL ConfigMap creates the databases, schemas, tables, group roles and seed rows. `PUBLIC` loses `CONNECT` on `preview`, `production` and `postgres`, so a dynamic user can only reach the database its group role is granted.
 
 The bootstrap SQL only runs on an empty data directory. `install:postgres` therefore also applies `postgres-upgrade.sql` on every run: an idempotent migration that brings a kept PVC up to the current roles, tables and grants (for example, replacing `production_payments_rw` with `production_payments_ro`). On a fresh lab it changes nothing.
 
@@ -152,8 +152,8 @@ Each role's `revocation_statements` terminate the user's sessions (`pg_terminate
 **Lease lifecycle.**
 
 1. Proxy reads `db/creds/<role>` with its token; Vault returns a username, password and a 10-minute lease.
-2. Proxy caches the response and renews the lease before each 10-minute period ends, up to the 30-minute `max_ttl`.
-3. At `max_ttl` Vault revokes the lease and drops the user. Proxy evicts the cache entry; the app's next read mints a new user.
+2. Proxy caches the response and renews the lease before each 10-minute period ends, up to the 30-minute `max_ttl` ([renewal management](https://developer.hashicorp.com/vault/docs/agent-and-proxy/proxy/caching#renewal-management)). The audit log shows these `sys/leases/renew` calls under each pod's token; the app itself never renews.
+3. At `max_ttl` Vault revokes the lease and drops the user. Proxy evicts the cache entry ([cache evictions](https://developer.hashicorp.com/vault/docs/agent-and-proxy/proxy/caching#cache-evictions)); the app's next read reaches Vault and mints a new user.
 4. Each lease is a child of the Proxy's Vault token. When that token reaches its own 30-minute `max_ttl`, Vault revokes its leases too, so database `max_ttl` is set equal to `token_max_ttl` and never above it.
 5. Break-glass: `vault lease revoke -prefix db/creds/preview-payments` drops every payments-preview user at once.
 
@@ -161,7 +161,7 @@ Each role's `revocation_statements` terminate the user's sessions (`pg_terminate
 
 Each app also reads a static API key from KV v2 through the same Proxy socket. This lets the demo compare a static secret with a dynamic one while Vault is unavailable. On CE the API key survives an outage only in the app's memory; on Enterprise, Proxy serves it from its cache for as long as the outage lasts.
 
-**Mount and secrets.** KV v2 at `kvv2/` (the repo's mount name). `config:kv-secret` seeds one secret per entry in `apps.json` with a random 48-character hex key:
+**Mount and secrets.** KV v2 at `kvv2/` (the reference repo's mount name). `config:kv-secret` seeds one secret per entry in `apps.json` with a random 48-character hex key:
 
 | Path | Fields | Readable by |
 | --- | --- | --- |
@@ -215,17 +215,18 @@ Steps 1–6 happen once per Proxy login (every 30 minutes at most). Steps 7–12
 
 **What the socket does and does not protect.** It removes network exposure inside the pod and keeps other UIDs out. It does not limit the app itself: whatever runs as UID 10001 in the app container can use everything the policy allows. The templated policy is the control; the socket is defence in depth.
 
-**Cache and out-of-band revocation.** Proxy evicts a cache entry when it sees a revocation pass through it, or when renewal fails. A revocation made directly on Vault, such as the break-glass `lease revoke -prefix`, is not seen and leaves a stale entry until the next renewal attempt fails. The app therefore calls `POST /proxy/v1/cache-clear` with `{"type": "request_path", "value": "/v1/db/creds/<role>"}` when PostgreSQL rejects its login, then reads again (section 8).
+**Cache and out-of-band revocation.** Proxy evicts a cache entry when it sees a revocation pass through it, or when renewal fails ([cache evictions](https://developer.hashicorp.com/vault/docs/agent-and-proxy/proxy/caching#cache-evictions)). A revocation made directly on Vault, such as the break-glass `lease revoke -prefix`, is not seen and leaves a stale entry until the next renewal attempt fails. Scenario 7 shows this: the app logs `db_login_failed`, then `cache_cleared`, then `creds_acquired` with a new user. The app therefore calls [`POST /proxy/v1/cache-clear`](https://developer.hashicorp.com/vault/docs/agent-and-proxy/proxy/caching#cache-clear) with `{"type": "request_path", "value": "/v1/db/creds/<role>"}` when PostgreSQL rejects its login, then reads again (section 8).
 
 ## 8. Sample application
 
-The app is one small Python service (`db-app`, Python 3.12, `psycopg` 3, standard-library HTTP over the socket) deployed three times; its only configuration is the socket path, the Vault role path and the database host, all non-secret.
+The app is one small Python service (`db-app`, Python 3.12, `psycopg` 3, standard-library HTTP over the socket) deployed three times. Its configuration is all non-secret: the socket path, the Vault role path and the database location. `app/README.md` lists every setting, including `DB_PORT`, `DEMO_MODE`, `LOG_LEVEL` and `PORT`.
 
 | Setting (env var) | Example | Secret? |
 | --- | --- | --- |
 | `VAULT_SOCKET` | `/run/vault/proxy.sock` | No |
 | `DB_CREDS_PATH` | `db/creds/preview-payments` | No |
 | `DB_HOST` / `DB_NAME` | `postgres.postgres.svc.cluster.local` / `preview` | No |
+| `DB_SCHEMA` | `payments` (`/data` reads `<schema>.items`) | No |
 
 **Credential behaviour.**
 
@@ -234,15 +235,16 @@ The app is one small Python service (`db-app`, Python 3.12, `psycopg` 3, standar
 3. Re-read at two thirds of `lease_duration`, capped at 60 s (`CREDS_REFRESH_MAX_SECONDS`). Proxy returns the same cached lease while it is renewable. If the username changed, build a new pool, switch traffic to it and close the old one. The cap means a user dropped at `max_ttl` is replaced within about a minute.
 4. On PostgreSQL error `28P01` (invalid password) or `28000`: call `POST /proxy/v1/cache-clear` for that path, read again, rebuild the pool. Retry with jittered backoff, at most 5 attempts.
 5. On `403` from Vault for its own path: log `vault_denied` and retry with jittered backoff (capped at 30 s), keeping any open pool. A 403 is transient while Proxy has no token (just started, or re-authenticating after an outage). `/try` never retries: its 403 is the expected result of the isolation tests.
-6. On SIGTERM: install the signal handlers before the first Vault read, then stop serving, stop the refresh threads and call `POST /v1/auth/token/revoke-self`, which revokes the Proxy token and its database lease. The app logs `token_revoked_self` with the status, at `WARNING` when it is not `2xx`. Once shutdown starts the app makes no further Vault reads and opens no pools, so it cannot mint a lease after the revoke; requests still in flight get `503 shutting_down`.
+6. On SIGTERM: install the signal handlers before the first Vault read, then stop serving, stop the refresh threads, close the pool (so revocation never ends a session still in use) and call `POST /v1/auth/token/revoke-self`, which revokes the Proxy token and its database lease. The app logs `token_revoked_self` with the status; a non-`204` status or an unreachable socket also logs `revoke_self_failed` at `WARNING`. Once shutdown starts the app makes no further Vault reads and opens no pools, so it cannot mint a lease after the revoke; requests still in flight get `503 shutting_down`.
 
 **Endpoints.**
 
 | Path | Returns |
 | --- | --- |
-| `/healthz` | `200` when a pool is open |
+| `/healthz` | `200` when a pool is open, else `503` |
 | `/whoami` | `current_user`, lease ID suffix and seconds to expiry; never the password |
 | `/data` | Rows from its own schema, proving the grant works |
+| `/apikey` | KV version, fingerprint, source, cache headers and staleness; never the key (section 6a) |
 | `/try?path=db/creds/<role>` | Demo only: tries another Vault path and returns the HTTP status, to show the denial live |
 
 `/try` is the stand-in for a compromised or prompt-injected workload. It is disabled unless `DEMO_MODE=true`, and it returns only the status code, never credential values.
@@ -253,19 +255,20 @@ Both refresh intervals, `KV_REFRESH_SECONDS` and `CREDS_REFRESH_MAX_SECONDS`, mu
 
 ## 9. Platform and Taskfile automation
 
-Everything runs from `task`, reusing the repo's structure: `scripts/cluster-up.sh` and `cluster-ready.sh`, `kubectl exec vault-0` for configuration, `.env` plus a git-ignored `vault-init.json`, and one `config:` / `deploy:` / `verify:` task per concern.
+Everything runs from `task`, reusing the reference repo's structure: `scripts/cluster-up.sh` and `cluster-ready.sh`, `kubectl exec vault-0` for configuration, `.env` plus a git-ignored `vault-init.json`, and one `config:` / `deploy:` / `verify:` task per concern.
 
-**k3d cluster.** `task cluster:up` creates `vault-db-lab` with the repo's flags minus anonymous auth:
+**k3d cluster.** `task cluster:up` creates `vault-db-lab` with the reference repo's flags minus anonymous auth:
 
 ```bash
 k3d cluster create vault-db-lab --wait=false \
+  --image rancher/k3s:v1.36.6-k3s1 \
   --port 8200:30820@server:0 \
   --k3s-arg "--disable=traefik,servicelb@server:0"
 ```
 
-`localhost:8200` reaches Vault through NodePort `30820`. Native sidecars need Kubernetes 1.29 or later; current k3d images meet that.
+`localhost:8200` reaches Vault through NodePort `30820`. Native sidecars need Kubernetes 1.29 or later; the pinned k3s image meets that.
 
-**Vault CE.** Helm chart `hashicorp/vault` `0.34.1` (the repo's pin) with image `hashicorp/vault:2.2.1`, the latest Community release at build time (the repo pins `2.1-ent`). Values replace the repo's Enterprise settings:
+**Vault CE.** Helm chart `hashicorp/vault` `0.34.1` (the reference repo's pin) with image `hashicorp/vault:2.2.1`, the latest Community release at build time (the reference repo pins `2.1-ent`). Values replace the reference repo's Enterprise settings:
 
 | Value | Setting |
 | --- | --- |
@@ -276,25 +279,25 @@ k3d cluster create vault-db-lab --wait=false \
 | `injector.enabled` / `csi.enabled` | `false` / `false` |
 | `global.tlsDisable` | `true` (demo only) |
 
-No Enterprise namespaces exist in CE, so every command drops the repo's `VAULT_NAMESPACE=tn001`. Vault uses Shamir seal: 5 key shares, threshold 3, written to `vault-init.json`. After a laptop restart, `task cluster:up` followed by `task unseal:vault` brings it back with all data intact.
+No Enterprise namespaces exist in CE, so every command drops the reference repo's `VAULT_NAMESPACE=tn001`. Vault uses Shamir seal: 5 key shares, threshold 3, written to `vault-init.json`. After a laptop restart, `task cluster:up` followed by `task unseal:vault` brings it back with all data intact.
 
 **Task list.**
 
-| Task | Does | Repo equivalent |
+| Task | Does | Reference repo equivalent |
 | --- | --- | --- |
-| `prerequisites` | Checks `kubectl`, `helm`, `k3d`, `docker`/`podman`, `jq`, `task`; adds the Helm repo | `prerequisites` |
+| `deps` (alias `prerequisites`) | Checks every required CLI (`scripts/check-deps.sh`); `task init` adds the Helm repo | `prerequisites` |
 | `cluster:up` / `cluster:stop` / `cluster:down` | Creates or starts, stops, deletes the k3d cluster | Same |
 | `install:vault` | Helm install of Vault CE with Raft values | `install:vault` without licence |
 | `init:vault` / `unseal:vault` | Initialises once, writes `vault-init.json` and `.env`; unseals with 3 keys | Same |
 | `config:vault` | File audit device to stdout; applies `vault-token-reviewer` SA, `auth-delegator` binding, token Secret and `vault-sa-reader` RBAC | `config:vault` plus `vault-sa-reader-rbac.yaml` |
 | `config:k8s-auth` | Enables `kubernetes-auth-mount` with annotation metadata, reads the accessor, writes policy `db-app` and role `db-app` | `scripts/config-pki-secret.sh` pattern |
-| `install:postgres` | Namespace `postgres`, PVC, Deployment, Service and the bootstrap SQL ConfigMap | `postgres-deployment.yaml.tpl` |
+| `install:postgres` | Namespace `postgres`, the `postgres-credentials` Secret, PVC, Deployment, Service and the bootstrap SQL ConfigMap; applies `postgres-upgrade.sql` on every run | `postgres-deployment.yaml.tpl` |
 | `config:db-secret` | Enables `db/`, writes `pg-preview` and `pg-production`, the three roles, then `rotate-root` on both | `deploy:dynamic-secret` DB steps |
-| `deploy:db-app` | Builds and imports the app image (`k3d image import`), renders one namespace, annotated SA, ConfigMap and Deployment per entry in `apps.json` | `entity-secrets` templates + `apps.json` |
-| `verify:db-app` | Waits for pods, calls `/whoami` and `/data` on each | `verify:*` |
-| `demo:isolation` / `demo:rotation` / `demo:revoke` | Runs the scenarios in section 11 | New |
+| `deploy:db-app` | Builds and imports the app image (`k3d image import`), renders one namespace, annotated SA, `app-team` Role and RoleBinding, ConfigMap, Deployment and Service per entry in `apps.json` | `entity-secrets` templates + `apps.json` |
+| `verify:db-app` | Waits for each rollout, checks the pod spec holds no secret, calls `/whoami`, `/data` and `/apikey` on each | `verify:*` |
+| `demo:isolation` / `demo:rotation` / `demo:revoke` / `demo:shutdown` | Runs the scenarios in section 11 | New |
 | `clean:leases` | `vault lease revoke -prefix db/creds/` | `clean` lease step |
-| `all` | `prerequisites` → `cluster:up` → `install` → `config` → `deploy` → `verify` | `all` |
+| `all` | `deps` → `cluster:up` → `install` → `install:postgres` → `config:k8s-auth` → `config:db-secret` → `config:kv-secret` → `deploy:db-app` → `verify:db-app` | `all` |
 
 **KV v2 and outage tasks.**
 
@@ -307,7 +310,13 @@ No Enterprise namespaces exist in CE, so every command drops the repo's `VAULT_N
 
 New Taskfile variables: `vault_edition` (`ce` or `ent`), `kv_refresh_seconds` (`30`), `outage_minutes` (`12`). `all` runs `config:kv-secret` straight after `config:db-secret`.
 
-**Files added.** `vault-ce/vault-values.yaml`, `vault-ce/db-secrets/db-app.hcl`, `db-app-role.json`, `postgres-bootstrap.sql`, `templates/{namespace,service-account,deployment,proxy-config}.yaml.tpl`, `apps.json`, `app/` (Python source and Dockerfile), `scripts/config-k8s-auth.sh`, `scripts/config-db-secret.sh`, and `docs/db-proxy-secrets.md`.
+**Files added.**
+
+- Vault: `vault-ce/vault-values.yaml`, `vault-ce/vault-token-reviewer.yaml`, `vault-ce/vault-sa-reader-rbac.yaml`, `vault-ce/apps.json`, `vault-ce/db-secrets/db-app.hcl`, `vault-ce/db-secrets/db-app-role.json`.
+- PostgreSQL: `vault-ce/postgres/postgres.yaml`, `vault-ce/postgres/00-bootstrap.sh`, `vault-ce/postgres/postgres-bootstrap.sql`, `vault-ce/postgres/postgres-upgrade.sql`.
+- Templates: `templates/{namespace,service-account,deployment,proxy-config,app-team-rbac}.yaml.tpl`.
+- Scripts: `scripts/config-k8s-auth.sh`, `scripts/config-db-secret.sh`, `scripts/config-kv-secret.sh`, `scripts/verify-db-app.sh` and `scripts/demo-*.sh`.
+- App and docs: `app/` (Python source, tests and Dockerfile), `docs/db-proxy-secrets.md`, `docs/troubleshooting.md`.
 
 ## 10. Security controls and threat model
 
@@ -323,44 +332,44 @@ The trust boundary is Kubernetes RBAC on ServiceAccounts: Vault checks the token
 | Request forgery through the app (SSRF) | `require_request_header = true` rejects requests without `X-Vault-Request` | An attacker who controls headers too |
 | Leaked database password | One user per lease, `VALID UNTIL`, 10-minute TTL, 30-minute cap, `revoke -prefix` | Valid until revocation, at most 30 minutes |
 | Vault's database admin password leaked from bootstrap | `vault_admin_preview` and `vault_admin_production` are not superusers and each reaches one database; `rotate-root` right after configuration | The random `postgres` superuser password stays in a Kubernetes Secret for the demo |
-| Unseal keys or root token on the laptop | `vault-init.json` and `.env` are git-ignored, as in the repo | Demo-grade only (below) |
+| Unseal keys or root token on the laptop | `vault-init.json` and `.env` are git-ignored, as in the reference repo | Demo-grade only (below) |
 
 **KV v2 API key, compared with the dynamic credentials.** A leaked API key stays valid until someone rotates it, not for 30 minutes, so it is the weaker of the two secrets and the demo says so. On Enterprise, Proxy holds the key in memory for the life of the pod, and under `optimistic` refresh a policy revoked during an outage only takes effect once Vault returns. The trade is availability against how quickly access can be revoked. `pessimistic` reverses it.
 
-**Demo-only shortcuts that must not carry into production:** plain HTTP on the Vault listener (`tlsDisable: true`), unseal keys and root token in a local file, root token used for configuration, `sslmode=disable` to PostgreSQL, a single Vault node and the `postgres` superuser password in a manifest. Production equivalents: TLS everywhere, auto-unseal, root token revoked after a Terraform-driven bootstrap, `sslmode=verify-full`, and a 3- or 5-node Raft cluster.
+**Demo-only shortcuts that must not carry into production:** plain HTTP on the Vault listener (`tlsDisable: true`), unseal keys and root token in a local file, root token used for configuration, `sslmode=disable` to PostgreSQL, a single Vault node and the `postgres` superuser password kept in a Kubernetes Secret. Production equivalents: TLS everywhere, auto-unseal, root token revoked after a Terraform-driven bootstrap, `sslmode=verify-full`, and a 3- or 5-node Raft cluster.
 
 **Audit.** A file audit device writes to stdout, so `kubectl logs vault-0 -n vault` shows every login (with its role and ServiceAccount name, namespace and UID) and every `db/creds` and `kvv2` read, including denials. The `alias-metadata-*` values are stored on the entity alias, not in the audit entry; `vault read identity/entity-alias/id/<id>` shows them. Each denial in section 11 can be pointed out in the log during the demo.
 
 ## 11. Demo scenarios and acceptance criteria
 
-The demo passes when every row below shows its expected result from a fresh `task all`, with no manual step besides answering the re-initialise prompt.
+The demo passes when every row below shows its expected result on a lab built by a fresh `task all`, using the task named in each row. No manual step is needed. Rows are in numeric order; `docs/db-proxy-secrets.md` runs them in a suggested demo order.
 
 | # | Scenario | Task | Action | Expected result |
 | --- | --- | --- | --- | --- |
-| 1 | Zero-secret bootstrap | `verify:db-app` | Inspect pod spec and env of `db-app-payments-preview` | No Vault token, password or role ID; `/whoami` returns a user like `v-kubernet-preview-p-…` |
+| 1 | Zero-secret bootstrap | `verify:db-app` | Inspect pod spec and env of `db-app-payments-preview` | No Vault token, password or role ID; `/whoami` returns a user like `v-kubernet-preview--…` |
 | 2 | Own data | `verify:db-app` | `GET /data` on each app | Rows from its own schema only |
 | 3 | Cross-app read | `demo:isolation` | payments-preview `/try?path=db/creds/preview-checkout` | `403`; audit log shows the denied path |
 | 4 | Cross-environment read | `demo:isolation` | payments-preview `/try?path=db/creds/production-payments` | `403`; production canary never returned |
 | 5 | Database-level isolation | `demo:isolation` | With payments-preview credentials, `psql` to database `production` | Connection refused: `permission denied for database` |
-| 6 | Rotation | `demo:rotation` | Watch `/whoami` for 35 minutes, or shorten TTLs with `demo_ttl=2m` | Username changes at or before `max_ttl`; old role gone from `pg_roles` |
-| 7 | Break-glass revoke | `demo:revoke` | `vault lease revoke -prefix db/creds/preview-payments` | App logs `28P01`, clears its cache entry, gets a new user within 30 s; other apps unaffected |
+| 6 | Rotation | `demo:rotation` | Watch `/whoami` for up to 33 minutes (`max_ttl` + 3 min), or about 5 minutes with `demo_ttl=2m` | Username changes at or before `max_ttl`; old role gone from `pg_roles` |
+| 7 | Break-glass revoke | `demo:revoke` | `vault lease revoke -prefix db/creds/preview-payments` | App logs `28P01`, clears its cache entry, gets a new user within about 10 s (6 s in each of three measured runs; the task allows 60 s); other apps unaffected |
 | 8 | Annotation tampering is blocked by RBAC | `demo:isolation` | As the app-team user, `kubectl annotate sa … environment=production` | `forbidden`; no Vault change needed |
+| 9 | Restart survival | manual | `task cluster:stop`, `cluster:up`, `unseal:vault`, then `verify:db-app` | Policies, roles and connections intact; apps recover new credentials |
 | 16 | Read-only production, one table | `demo:isolation` | With production-payments credentials, `SELECT` and `INSERT` on `payments.items`, `SELECT` on `payments.card_tokens` | `SELECT` on `items` works; the other two fail with `permission denied for table …` |
 | 17 | Shutdown revokes its own user | `demo:shutdown` | Delete the app pod | App logs `token_revoked_self` (`204`); its database user leaves `pg_roles` within seconds, not at `max_ttl`; the replacement pod gets a new user |
-| 9 | Restart survival | manual | `task cluster:stop`, `cluster:up`, `unseal:vault` | Policies, roles and connections intact; apps recover new credentials |
 
 KV v2 and outage scenarios:
 
 | # | Scenario | Task | Action | Expected result (CE) | Expected result (Enterprise) |
 | --- | --- | --- | --- | --- | --- |
-| 10 | Own API key | `verify:db-app` | `GET /apikey` on each app | Version 1, `source=vault` | Version 1, then `source=proxy-cache`, `X-Cache: HIT` |
+| 10 | Own API key | `verify:db-app` | `GET /apikey` on each app | Version ≥ 1 (1 on a fresh lab), `source=vault` | Version 1, then `source=proxy-cache`, `X-Cache: HIT` |
 | 11 | Cross-app and cross-environment KV read | `demo:isolation` | `/try?path=kvv2/data/production/payments/api-key` from payments-preview | `403` | `403`, never cached |
-| 12 | Rotation | `demo:kv-rotate APP=db-app-payments-preview` | New key version | Seen on next poll (≤ 30 s) | Event refreshes the cache; seen on next poll |
-| 13 | Vault outage, static vs dynamic | `demo:outage` | Seal Vault for 12 min | `/apikey` keeps working only from `app-memory`, `stale=true`. `/whoami` keeps working until the lease renewal fails, then new DB logins fail | `/apikey` keeps working from `proxy-cache` the whole time, `Age` rising. `/whoami` same as CE |
+| 12 | Rotation | `demo:kv-rotate APP=db-app-payments-preview` | New key version | Seen on next poll (about 30 s; the task waits up to 60 s) | Event refreshes the cache; seen on next poll |
+| 13 | Vault outage, static vs dynamic | `demo:outage` | Seal Vault for 12 min | `/apikey` keeps working only from `app-memory`, `stale=true`. `/whoami` keeps working on existing sessions for the whole outage; only new DB logins fail once `VALID UNTIL` passes | `/apikey` keeps working from `proxy-cache` the whole time, `Age` rising. `/whoami` same as CE |
 | 14 | New pod during outage | `demo:outage:new-pod` | Delete one app pod while sealed | Pod stays not-ready: Proxy cannot log in | Same: the cache is per pod and starts empty |
-| 15 | Recovery | `demo:outage` (end) | Unseal | Proxy re-authenticates, KV refresh and new DB leases resume within 1 min | Same; the KV cache stays warm |
+| 15 | Recovery | `demo:outage` (end) | Unseal | Proxy re-authenticates, KV refresh and new DB leases resume within 2 min | Same; the KV cache stays warm |
 
-The TTL variables (`db_default_ttl`, `db_max_ttl`, `token_ttl`, `token_max_ttl`) sit at the top of the Taskfile beside the repo's existing `postgresql_max_ttl`, so a short live demo can run with 2-minute leases.
+The TTL variables (`db_default_ttl`, `db_max_ttl`, `token_ttl`, `token_max_ttl`) sit at the top of the Taskfile. `demo_ttl` (for example `task demo:rotation demo_ttl=2m`) shortens the lease and token TTLs for one run and restores them afterwards.
 
 ## 12. Risks, assumptions and open decisions
 
@@ -383,149 +392,20 @@ The TTL variables (`db_default_ttl`, `db_max_ttl`, `token_ttl`, `token_max_ttl`)
 
 - [ ] Add an admission policy to lock `alias-metadata-*` annotations, or keep RBAC-only for the demo?
 - [ ] App language: Python as designed, or Go to ship a smaller distroless image?
-- [ ] Keep Vault configuration in `kubectl exec` scripts like the repo, or add a Terraform `vault` provider stage?
+- [ ] Keep Vault configuration in `kubectl exec` scripts like the reference repo, or add a Terraform `vault` provider stage?
 
 ## 13. Appendix: reference configuration
 
-**A. Vault Proxy (`proxy-config.yaml.tpl`, ConfigMap key `proxy.hcl`)**
+The reference configuration lives in this repo; these links replace the excerpts that used to sit here, so they cannot drift.
 
-```hcl
-vault {
-  address = "http://vault.vault.svc.cluster.local:8200"
-}
-
-auto_auth {
-  method "kubernetes" {
-    mount_path = "auth/kubernetes-auth-mount"
-    min_backoff = "1s"
-    max_backoff = "15s"   # default grows to 5m, which delays recovery after an outage
-    config = {
-      role       = "db-app"
-      token_path = "/var/run/secrets/vault/token"
-    }
-  }
-}
-
-api_proxy {
-  use_auto_auth_token = "force"
-}
-
-cache {}
-
-listener "unix" {
-  address                = "/run/vault/proxy.sock"
-  socket_mode            = "0660"
-  socket_user            = "10001"
-  socket_group           = "10001"
-  tls_disable            = true
-  require_request_header = true
-}
-```
-
-**B. Auth role (`db-app-role.json`)**
-
-```json
-{
-  "bound_service_account_names": ["db-app-*-sa"],
-  "bound_service_account_namespaces": ["db-app-*"],
-  "audience": "vault",
-  "alias_name_source": "serviceaccount_uid",
-  "token_policies": ["db-app"],
-  "token_type": "service",
-  "token_ttl": "15m",
-  "token_max_ttl": "30m"
-}
-```
-
-**C. ServiceAccount (`service-account.yaml.tpl`)**
-
-```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: ${APP_NAME}-sa
-  namespace: ${APP_NAME}
-  annotations:
-    vault.hashicorp.com/alias-metadata-application_name: ${APPLICATION}
-    vault.hashicorp.com/alias-metadata-environment: ${ENVIRONMENT}
-    vault.hashicorp.com/alias-metadata-team: ${TEAM}
-automountServiceAccountToken: false
-```
-
-**D. Pod spec excerpt (`deployment.yaml.tpl`)**
-
-```yaml
-spec:
-  serviceAccountName: ${APP_NAME}-sa
-  automountServiceAccountToken: false
-  securityContext: { runAsUser: 10001, runAsGroup: 10001, runAsNonRoot: true, fsGroup: 10001 }
-  initContainers:
-    - name: vault-proxy
-      image: hashicorp/vault:2.2.1
-      restartPolicy: Always          # native sidecar
-      command: ["vault"]             # the image entrypoint does not know the proxy subcommand
-      args: ["proxy", "-config=/etc/vault-proxy/proxy.hcl"]
-      # no VAULT_ADDR env: it would override vault.address in proxy.hcl
-      startupProbe:
-        exec: { command: ["vault", "token", "lookup", "-address=unix:///run/vault/proxy.sock", "-format=json"] }
-        periodSeconds: 2
-        failureThreshold: 30
-      securityContext: { readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
-      volumeMounts:
-        - { name: proxy-config, mountPath: /etc/vault-proxy, readOnly: true }
-        - { name: vault-token, mountPath: /var/run/secrets/vault, readOnly: true }
-        - { name: proxy-socket, mountPath: /run/vault }
-  containers:
-    - name: app
-      image: db-app:local
-      env:
-        - { name: VAULT_SOCKET, value: /run/vault/proxy.sock }
-        - { name: DB_CREDS_PATH, value: db/creds/${ENVIRONMENT}-${APPLICATION} }
-      securityContext: { readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
-      volumeMounts:
-        - { name: proxy-socket, mountPath: /run/vault }
-  volumes:
-    - { name: proxy-socket, emptyDir: { medium: Memory } }
-    - { name: proxy-config, configMap: { name: vault-proxy-config } }
-    - name: vault-token
-      projected:
-        sources:
-          - serviceAccountToken: { path: token, audience: vault, expirationSeconds: 600 }
-```
-
-**E. Taskfile excerpt (`config:db-secret`)**
-
-```yaml
-  config:db-secret:
-    desc: Configure the database secrets engine, connections and roles
-    preconditions:
-      - test -f vault-init.json
-    cmds:
-      - kubectl exec vault-0 -n vault -- sh -c "VAULT_TOKEN=$VAULT_TOKEN vault secrets enable -path=db database" || true
-      - ./scripts/config-db-secret.sh {{ .db_default_ttl }} {{ .db_max_ttl }}
-    env:
-      VAULT_TOKEN:
-        sh: cat vault-init.json | jq -r '.root_token'
-```
-
-**F. Bootstrap SQL excerpt (`postgres-bootstrap.sql`)**
-
-```sql
-CREATE DATABASE preview;
-CREATE DATABASE production;
-REVOKE CONNECT ON DATABASE preview, production FROM PUBLIC;
-
--- :'..._password' variables are random, supplied by 00-bootstrap.sh from a Kubernetes Secret
-CREATE ROLE vault_admin_preview WITH LOGIN CREATEROLE PASSWORD :'vault_admin_preview_password';
-CREATE ROLE vault_admin_production WITH LOGIN CREATEROLE PASSWORD :'vault_admin_production_password';
-GRANT pg_signal_backend TO vault_admin_preview, vault_admin_production;
-CREATE ROLE preview_payments_rw NOLOGIN;
-GRANT CONNECT ON DATABASE preview TO preview_payments_rw, vault_admin_preview;
-GRANT preview_payments_rw TO vault_admin_preview WITH ADMIN OPTION;
--- repeat for preview_checkout_rw (vault_admin_preview) and production_payments_ro (vault_admin_production),
--- then per database: CREATE SCHEMA, tables, seed rows, GRANT USAGE and DML to the preview group roles
-GRANT SELECT ON payments.items TO production_payments_ro;  -- production: read-only, one table
-```
+| # | File | What it holds |
+| --- | --- | --- |
+| A | [`templates/proxy-config.yaml.tpl`](../templates/proxy-config.yaml.tpl) | Vault Proxy `proxy.hcl` (section 7). `max_backoff = "15s"` because the default grows to 5 min, which delays login after an outage |
+| B | [`vault-ce/db-secrets/db-app-role.json`](../vault-ce/db-secrets/db-app-role.json) | Kubernetes auth role `db-app` (section 4) |
+| C | [`templates/service-account.yaml.tpl`](../templates/service-account.yaml.tpl) | ServiceAccount with the `alias-metadata-*` annotations |
+| D | [`templates/deployment.yaml.tpl`](../templates/deployment.yaml.tpl) | Pod spec: Proxy native sidecar, startup probe, socket and token volumes, app env |
+| E | [`Taskfile.yml`](../Taskfile.yml) `config:db-secret` and [`scripts/config-db-secret.sh`](../scripts/config-db-secret.sh) | Database secrets engine, `pg-preview` / `pg-production` connections, roles, `rotate-root` |
+| F | [`vault-ce/postgres/postgres-bootstrap.sql`](../vault-ce/postgres/postgres-bootstrap.sql) | Databases, admin logins and group roles. Each group role is granted to its admin login `WITH ADMIN OPTION`, which PostgreSQL 16 needs before a `CREATEROLE` user can grant it |
 
 **G. KV v2 seeding and the Enterprise cache toggle (`scripts/config-kv-secret.sh`, excerpt)**
 
@@ -544,7 +424,7 @@ if [ "${VAULT_EDITION}" = ent ]; then
 fi
 ```
 
-`db-app-kv-events.hcl` (Enterprise only, follows the repo's `entity-secret.hcl`):
+`db-app-kv-events.hcl` (Enterprise only, follows the reference repo's `entity-secret.hcl`):
 
 ```hcl
 path "kvv2/data/{{identity.entity.aliases.__ACCESSOR__.metadata.environment}}/{{identity.entity.aliases.__ACCESSOR__.metadata.application_name}}/*" {

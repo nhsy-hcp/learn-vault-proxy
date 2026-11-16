@@ -9,15 +9,15 @@ on a UNIX socket. The pod holds no Vault secret. The full design is in [solution
 
 ```bash
 task init          # pre-commit hooks, Helm repo, .env, app venv
-task all           # cluster, Vault CE, auth, PostgreSQL, db/ and kvv2/ engines, 3 apps, verify
+task all           # cluster, Vault CE, PostgreSQL, auth, db/ and kvv2/ engines, 3 apps, verify
 ```
 
 A fresh run takes about 5 minutes. `task all` stops at the first failing step. Re-running it is safe.
 
 | Step | Task | Result |
 | --- | --- | --- |
-| Cluster | `cluster:up` | k3d `vault-db-lab`, Vault on `localhost:8200` |
-| Vault | `install` | Vault CE 2.2.1, single-node Raft, unsealed, audit to stdout |
+| Cluster | `cluster:up` | k3d `vault-db-lab`, host port 8200 mapped to NodePort 30820 |
+| Vault | `install` (= `install:vault`, `init:vault`, `unseal:vault`, `config:vault`) | Vault CE 2.2.1, single-node Raft, unsealed, audit to stdout |
 | Identity | `config:k8s-auth` | `auth/kubernetes-auth-mount`, annotations as alias metadata, policy and role `db-app` |
 | Database | `install:postgres`, `config:db-secret` | Databases `preview` and `production`, connections `pg-preview`/`pg-production`, 3 roles, admin passwords rotated |
 | API keys | `config:kv-secret` | `kvv2/<environment>/<application>/api-key` per app |
@@ -40,8 +40,9 @@ The app writes one JSON object per line to stdout, so any log viewer shows each 
 - **kubectl:** `task logs APP=db-app-payments-preview` (add `C=vault-proxy` for the sidecar), or `task logs:vault`
   for the Vault audit log.
 
-Useful app events: `creds_acquired`, `refresh_scheduled`, `creds_rotated`, `pool_swapped`, `db_connection_lost`,
-`db_login_failed`, `cache_cleared`, `vault_denied`, `kv_refreshed`, `kv_refresh_failed`, `kv_stale`.
+Useful app events: `creds_acquired`, `pool_opened`, `refresh_scheduled`, `creds_unchanged`, `creds_rotated`,
+`pool_swapped`, `db_connection_lost`, `db_login_failed`, `cache_cleared`, `retries_exhausted`, `vault_denied`,
+`kv_refreshed`, `kv_refresh_failed`, `kv_stale`, `token_revoked_self`.
 
 Endpoints, through the API server's service proxy (no port-forward needed):
 
@@ -59,11 +60,11 @@ kubectl get --raw "/api/v1/namespaces/db-app-payments-preview/services/db-app:ht
 | 1, 2, 10 | `task verify:db-app` | No secret in the pod spec; each app reads its own rows and its own API key |
 | 3, 4, 5, 8, 11, 16 | `task demo:isolation` | `403` for other apps and environments, audit-log denials, `permission denied for database`, RBAC blocks annotation edits, production credentials read-only on `payments.items` only |
 | 6 | `task demo:rotation demo_ttl=2m` | Username changes by `max_ttl`, old role dropped (restores TTLs afterwards) |
-| 7 | `task demo:revoke` | Break-glass revoke; the app recovers with a new user within seconds, other apps unaffected |
-| 17 | `task demo:shutdown APP=db-app-payments-preview` | A deleted pod revokes its own Proxy token, so its database user is dropped within seconds |
-| 12 | `task demo:kv-rotate APP=db-app-payments-preview` | New API key version picked up on the next poll |
-| 13, 15 | `task demo:outage outage_minutes=2` | Vault sealed: API key served from app memory (`stale=true`), DB sessions keep working; recovery after unseal |
-| 14 | `task demo:outage:new-pod` | A pod restarted while Vault is sealed never becomes Ready |
+| 7 | `task demo:revoke` | Break-glass revoke; the app recovers with a new user within about 10 s (the task allows 60 s), other apps unaffected |
+| 17 | `task demo:shutdown APP=db-app-payments-preview` | A deleted pod revokes its own Proxy token, so its database user is dropped within seconds (the task allows 45 s). `APP` is optional (default `db-app-payments-preview`) |
+| 12 | `task demo:kv-rotate APP=db-app-payments-preview` | New API key version picked up on the next poll. `APP` is required |
+| 13, 15 | `task demo:outage outage_minutes=2` | Vault sealed (default 12 min without `outage_minutes`): API key served from app memory (`stale=true`), DB sessions keep working; recovery after unseal |
+| 14 | `task demo:outage:new-pod` | A pod restarted while Vault is sealed stays not Ready (checked after 45 s); it recovers once the script unseals Vault |
 | 9 | manual | `task cluster:stop`, `task cluster:up`, `task unseal:vault`, `task verify:db-app` |
 
 `task test:all` runs the unit tests, `verify:db-app` and `demo:isolation` together.
