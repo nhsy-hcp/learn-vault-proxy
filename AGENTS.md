@@ -40,7 +40,7 @@ dynamic PostgreSQL credentials on k3d with Vault Community Edition. The design i
 | Task | Does |
 | --- | --- |
 | `task init` | Installs pre-commit hooks, adds the Helm repo, creates `.env`, syncs the app venv |
-| `task deps` | Checks the required CLI tools |
+| `task deps` | Checks the CLI tools the lab needs; lint tools are listed as optional (`task lint` requires them) |
 | `task all` (`up`) | Builds the whole lab: cluster, Vault, PostgreSQL, auth, engines, apps, verify |
 | `task down` | Stops the cluster, keeping its data; afterwards run `task cluster:up` and `task unseal:vault` |
 | `task build` | Builds the app image and imports it into k3d |

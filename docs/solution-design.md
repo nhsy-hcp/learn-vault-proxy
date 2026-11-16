@@ -285,7 +285,7 @@ No Enterprise namespaces exist in CE, so every command drops the reference repo'
 
 | Task | Does | Reference repo equivalent |
 | --- | --- | --- |
-| `deps` (alias `prerequisites`) | Checks every required CLI (`scripts/check-deps.sh`); `task init` adds the Helm repo | `prerequisites` |
+| `deps` (alias `prerequisites`) | Checks the CLIs the lab needs (`scripts/check-deps.sh`); lint tools are optional here and required by `task lint` (`--lint`); `task init` adds the Helm repo | `prerequisites` |
 | `cluster:up` / `cluster:stop` / `cluster:down` | Creates or starts, stops, deletes the k3d cluster | Same |
 | `install:vault` | Helm install of Vault CE with Raft values | `install:vault` without licence |
 | `init:vault` / `unseal:vault` | Initialises once, writes `vault-init.json` and `.env`; unseals with 3 keys | Same |

@@ -10,8 +10,11 @@ For the detailed architecture, see the [solution design](docs/solution-design.md
 
 ## Prerequisites
 
-kubectl, helm, k3d, docker or podman, jq, task, uv, pre-commit, shellcheck, gitleaks, yamllint, hadolint, ruff,
-envsubst and openssl. Check them with `task deps`. Optional: the `vault` CLI (for `task status`) and k9s.
+- To run the lab: kubectl, helm, k3d, docker or podman, jq, task, uv, envsubst and openssl. Check them with
+  `task deps`.
+- To lint (optional): pre-commit, shellcheck, gitleaks, yamllint, hadolint and ruff. `task lint` checks them first.
+
+Also optional: the `vault` CLI (for `task status`) and k9s.
 
 ## Quick start
 
